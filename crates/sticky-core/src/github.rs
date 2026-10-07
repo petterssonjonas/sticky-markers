@@ -275,10 +275,19 @@ pub fn rename(core: &Core, id: &str, name: &str) -> Result<Vault> {
     core.vault(id)
 }
 fn supported(path: &str) -> bool {
-    !path.split('/').any(|p| p.starts_with('.'))
-        && ["md", "png", "jpg", "jpeg", "gif", "webp", "svg", "pdf"]
-            .iter()
-            .any(|ext| path.to_lowercase().ends_with(&format!(".{ext}")))
+    !path.is_empty() && !path.split('/').any(|p| p.starts_with('.'))
+}
+fn attachment(path: &str) -> bool {
+    ["png", "jpg", "jpeg", "gif", "webp", "svg", "pdf"]
+        .iter()
+        .any(|ext| path.to_lowercase().ends_with(&format!(".{ext}")))
+}
+fn supported_data(path: &str, bytes: &[u8]) -> bool {
+    attachment(path)
+        || (bytes.len() <= crate::NOTE_LIMIT
+            && std::str::from_utf8(bytes)
+                .map(|s| crate::validate_content(s).is_ok())
+                .unwrap_or(false))
 }
 pub fn resolve_conflict(core: &Core, id: &str, path: &str, choice: &str) -> Result<Vault> {
     let v = core.vault(id)?;
@@ -391,11 +400,17 @@ fn local_files(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
             .to_string_lossy()
             .replace('\\', "/");
         if supported(&path) {
-            let b = fs::read(e.path())?;
-            if b.len() > 20 * 1024 * 1024 {
+            let size = e.metadata().map_err(|e| message(e.to_string()))?.len();
+            if !attachment(&path) && size > crate::NOTE_LIMIT as u64 {
+                continue;
+            }
+            if size > 20 * 1024 * 1024 {
                 return Err(message(format!("{path} exceeds the 20 MiB sync limit")));
             }
-            files.insert(path, b);
+            let b = fs::read(e.path())?;
+            if supported_data(&path, &b) {
+                files.insert(path, b);
+            }
         }
     }
     Ok(files)
@@ -488,6 +503,14 @@ fn sync_inner(core: &Core, v: &Vault, cfg: &SyncConfig) -> Result<()> {
             continue;
         }
         core.resolve(&v.id, path)?;
+        if !attachment(path) && item["size"].as_u64().unwrap_or(0) > crate::NOTE_LIMIT as u64 {
+            if cfg.baseline.contains_key(path) {
+                return Err(message(format!(
+                    "Synced {path} exceeds the editing limit; both versions are kept unchanged"
+                )));
+            }
+            continue;
+        }
         if item["size"].as_u64().unwrap_or(0) > 20 * 1024 * 1024 {
             return Err(message(format!("Remote {path} exceeds the sync limit")));
         }
@@ -505,9 +528,20 @@ fn sync_inner(core: &Core, v: &Vault, cfg: &SyncConfig) -> Result<()> {
         let b = STANDARD
             .decode(blob["content"].as_str().unwrap_or("").replace('\n', ""))
             .map_err(|e| message(e.to_string()))?;
-        remote.insert(path.to_owned(), b);
+        if supported_data(path, &b) {
+            remote.insert(path.to_owned(), b);
+        } else if cfg.baseline.contains_key(path) {
+            return Err(message(format!(
+                "Synced {path} is no longer editable text; both versions are kept unchanged"
+            )));
+        }
     }
     let local = local_files(Path::new(&v.path))?;
+    for path in cfg.baseline.keys().chain(remote.keys()) {
+        if !local.contains_key(path) && core.resolve(&v.id, path)?.exists() {
+            return Err(message(format!("Local {path} is too large or is not editable text; sync left both versions unchanged")));
+        }
+    }
     let lh = local
         .iter()
         .map(|(p, b)| (p.clone(), revision(b)))
@@ -760,6 +794,40 @@ mod tests {
                 json!({"content":STANDARD.encode(content)}),
             ),
         ]
+    }
+    #[test]
+    fn excluded_local_content_is_never_interpreted_as_deletion() {
+        let (_d, c, v) = fixture();
+        fs::write(
+            Path::new(&v.path).join("n.md"),
+            vec![b'x'; crate::NOTE_LIMIT + 1],
+        )
+        .unwrap();
+        let server = server(remote(b"base"));
+        assert!(sync(&c, &v.id)
+            .unwrap_err()
+            .to_string()
+            .contains("both versions unchanged"));
+        server.join().unwrap();
+        assert_eq!(
+            fs::metadata(Path::new(&v.path).join("n.md")).unwrap().len(),
+            (crate::NOTE_LIMIT + 1) as u64
+        );
+        assert_eq!(
+            c.vault(&v.id).unwrap().github.unwrap().baseline["n.md"],
+            revision(b"base")
+        );
+    }
+    #[test]
+    fn arbitrary_text_extensions_are_synced_and_binary_files_are_skipped() {
+        let (_d, _c, v) = fixture();
+        for name in ["settings.json", "service.conf", "README"] {
+            fs::write(Path::new(&v.path).join(name), "text").unwrap();
+        }
+        fs::write(Path::new(&v.path).join("binary.dat"), [0, 255]).unwrap();
+        let files = local_files(Path::new(&v.path)).unwrap();
+        assert_eq!(files.len(), 3);
+        assert!(files.contains_key("service.conf"));
     }
     #[test]
     fn remote_only_edit_updates_disk_and_baseline() {

@@ -650,34 +650,6 @@ hr {
   font-family: var(--note-font);
   font-size: var(--note-font-size);
 }
-.note-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 9px;
-  padding: 8px 12px;
-  gap: 10px;
-  opacity: 0.7;
-  border-top: 1px solid #0000000c;
-  user-select: none;
-}
-.note-footer > span {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.note-footer > span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 30%;
-}
-.note-footer button {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 9px;
-}
 .status-dot {
   width: 4px;
   height: 4px;
@@ -1332,3 +1304,35 @@ hr {
 .update-dialog { background: var(--panel); color: var(--text, #343d33); border: 1px solid var(--line); border-radius: 12px; padding: 20px; width: min(560px, calc(100vw - 24px)); max-height: calc(100vh - 32px); overflow: auto; }
 .update-dialog header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .update-dialog h2 { font-family: Georgia, serif; font-weight: 500; margin: 0; }
+
+/* Rendered notes use the same source-preserving editor as Edit mode. */
+.live-preview-block { padding: 0 8px; overflow-wrap: anywhere; }
+.live-preview-block .markdown-body { padding: 0; }
+.frontmatter-hint { opacity: .5; font: 11px system-ui; cursor: text; }
+.note-window { container-type: inline-size; container-name: note; }
+.note-header { padding: 4px; gap: 1px; }
+.note-header > .icon-button { width: 26px; flex-shrink: 0; }
+.note-header .icon-button[aria-pressed="true"] { background: #00000018; }
+.note-drag { font-size: 16px; opacity: .85; min-width: 35px; padding: 3px; }
+.note-save-status, .menu-save-status { font: 10px system-ui; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.note-save-status { flex-shrink: 0; margin-right: 6px; }
+.menu-save-status { display: none; margin: 6px 0 12px; }
+.menu-vault { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 8px; overflow-wrap: anywhere; }
+@container note (max-width: 560px) { .note-save-status { display: none; } .menu-save-status { display: flex; } }
+.format-buttons { margin-right: 2px; flex-shrink: 0; }
+.heading-control { position: relative; }
+.heading-control > .icon-button { width: 32px; gap: 0; }
+.heading-menu { position: absolute; right: 0; top: 32px; z-index: 35; padding: 5px; background: var(--paper); border: 1px solid #0002; border-radius: 8px; box-shadow: 0 8px 24px #0003; width: 165px; }
+.heading-menu button { display: flex; justify-content: space-between; width: 100%; padding: 7px; font-size: 13px; }
+.heading-menu button:hover { background: #0001; }
+.heading-menu span { opacity: .5; }
+.note-card { min-width: 0; overflow: hidden; }
+.note-card h2 { overflow-wrap: anywhere; }
+.card-preview { height: 135px; overflow: hidden; pointer-events: none; overflow-wrap: anywhere; }
+.card-preview .markdown-body { padding: 0; font-size: 12px; }
+.card-preview .markdown-body :is(h1,h2,h3,h4,h5,h6) { font-size: 15px; margin: 5px 0; }
+.card-preview .markdown-body p { display: block; white-space: normal; margin: 6px 0; }
+.card-preview img, .card-preview svg { max-height: 110px; object-fit: contain; }
+.card-preview pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.card-preview .markdown-body table { font-size: 10px; }
+.markdown-body, .missing-image { overflow-wrap: anywhere; }

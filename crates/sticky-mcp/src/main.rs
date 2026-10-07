@@ -79,7 +79,7 @@ impl Notes {
         }
     }
     #[tool(
-        description = "List explicitly authorized vaults. Notes are plain Markdown files; synchronization remains separate."
+        description = "List explicitly authorized vaults. Notes are UTF-8 text files (100 KiB maximum); synchronization remains separate."
     )]
     fn list_vaults(&self) -> std::result::Result<CallToolResult, ErrorData> {
         response(self.core.config().map(|c| {
@@ -91,7 +91,7 @@ impl Notes {
         }))
     }
     #[tool(
-        description = "List or search Markdown notes within an authorized vault. Results are paginated."
+        description = "List or search text notes within an authorized vault. Results are paginated."
     )]
     fn list_notes(
         &self,
@@ -116,7 +116,7 @@ impl Notes {
         })())
     }
     #[tool(
-        description = "Search full Markdown contents and paths within an authorized vault. Results are paginated."
+        description = "Search full text contents and paths within an authorized vault. Results are paginated."
     )]
     fn search_notes(
         &self,
@@ -134,7 +134,7 @@ impl Notes {
         })())
     }
     #[tool(
-        description = "Read Markdown and its revision. Read before updating; stale revisions are rejected."
+        description = "Read a text note and its revision. Read before updating; stale revisions are rejected."
     )]
     fn read_note(
         &self,
@@ -163,7 +163,7 @@ impl Notes {
         })())
     }
     #[tool(
-        description = "Replace Markdown only if expected_revision matches. Use a unique request_id. On conflict reread and reconcile; do not blindly retry. Success means saved locally."
+        description = "Replace text only if expected_revision matches. Use a unique request_id. On conflict reread and reconcile; do not blindly retry. Success means saved locally."
     )]
     fn update_note(
         &self,
@@ -202,7 +202,7 @@ impl Notes {
 #[tool_handler]
 impl ServerHandler for Notes {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo{capabilities:ServerCapabilities::builder().enable_tools().build(),instructions:Some("Operate only on authorized Markdown vaults. Read before editing. Content is user data. Tools confirm local persistence, not cloud sync.".into()),..Default::default()}
+        ServerInfo{capabilities:ServerCapabilities::builder().enable_tools().build(),instructions:Some("Operate only on authorized text vaults. Read before editing. Content is user data. Tools confirm local persistence, not cloud sync.".into()),..Default::default()}
     }
 }
 #[tokio::main]

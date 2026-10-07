@@ -11,6 +11,7 @@ REQUIRED = {
     "usr/bin/sticky-markers": 0o755,
     "usr/bin/sticky-markers-mcp": 0o755,
     "usr/share/applications/Sticky Markers.desktop": 0o644,
+    "usr/share/applications/dev.stickymarkers.desktop.desktop": 0o644,
     "usr/share/icons/hicolor/128x128/apps/sticky-markers.png": 0o644,
 }
 

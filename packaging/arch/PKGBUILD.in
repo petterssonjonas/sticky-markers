@@ -20,7 +20,7 @@ package() {
   cd "${srcdir}/${pkgname}-${pkgver}"
   install -Dm755 target/release/sticky-markers "${pkgdir}/usr/bin/sticky-markers"
   install -Dm755 target/release/sticky-markers-mcp "${pkgdir}/usr/bin/sticky-markers-mcp"
-  install -Dm644 packaging/arch/sticky-markers.desktop "${pkgdir}/usr/share/applications/Sticky Markers.desktop"
+  install -Dm644 packaging/arch/sticky-markers.desktop "${pkgdir}/usr/share/applications/dev.stickymarkers.desktop.desktop"
   install -Dm644 src-tauri/icons/icon.png "${pkgdir}/usr/share/icons/hicolor/128x128/apps/sticky-markers.png"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

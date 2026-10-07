@@ -29,3 +29,11 @@ describe("vault links", () => {
     );
   });
 });
+
+describe("heading insertion", () => {
+  it("replaces an existing heading level and preserves surrounding lines", () => {
+    const text = "before\n## Heading\nafter";
+    const e = formatEdit(text, 10, 10, "heading4");
+    expect(text.slice(0, e.from) + e.insert + text.slice(e.to)).toBe("before\n#### Heading\nafter");
+  });
+});

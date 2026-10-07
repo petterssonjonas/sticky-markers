@@ -4,14 +4,14 @@ Markdown sticky notes for Linux, macOS, and Windows. Built with Tauri 2, Rust, R
 
 ## Using the app
 
-On first launch, choose a folder or an existing Obsidian vault. Register additional folders in the vault picker and switch between them. Notes remain ordinary `.md` files, including subfolders and existing frontmatter. Opening a note creates its own resizable, frameless window.
+On first launch, choose a folder or an existing Obsidian vault. Register additional folders in the vault picker and switch between them. Notes remain ordinary UTF-8 text files (including `.md`, `.json`, `.toml`, and `.conf`), including subfolders and existing frontmatter. Opening a note creates its own resizable, frameless window.
 
 - **+** creates a note. **Close** saves and tucks it into the collection; **Delete** is a separate, confirmed action.
-- The header offers bold, italic, underline, and strikethrough. The note menu includes bullets, a starter table, edit/view mode, fonts, size, export, rename, and the main window.
+- The header offers pinning, bold, italic, underline, strikethrough, bullets, and headings 1–6. The note menu includes a starter table, Edit/Rendered mode, fonts, size, export, rename, and the main window. Pinned notes have their own collection filter. Save status sits after the title, moving into the menu in narrow windows.
 - Choose from 16 colors in Classic, Gruvbox, Nord, or Catppuccin. Each note has a darker header. Light, dark, and system appearance are available.
-- The editor has a separate line-number gutter, undo/redo, Markdown highlighting, and keyboard shortcuts. Rendering supports GFM tables/tasks/footnotes, math, sanitized HTML, highlighted code, Mermaid, wikilinks, heading links, and local image embeds.
+- Rendered mode is the editable default: the active paragraph shows its Markdown markers while the rest renders. Source Edit mode has a separate line-number gutter, undo/redo, Markdown highlighting, and keyboard shortcuts. New blank windows stay in memory until text is entered; the first save names the file from its first nonempty line (at most 20 characters, spaces become underscores, collisions get a suffix). Non-Markdown text files open in source Edit mode. Both font selectors include installed system fonts. Rendering supports GFM tables/tasks/footnotes, math, sanitized HTML, highlighted code, Mermaid, wikilinks, heading links, and local image embeds.
 - First launch shows the collection. Subsequent launches restore active notes; if all notes were tucked away, a new one opens. Launching the application while it is already running creates a new note.
-- The tray menu offers the collection, new note, the last five notes, and Quit. Platform adapters also provide macOS Dock menus, Windows Jump Lists, and Linux desktop actions. Linux launcher support depends on the desktop shell.
+- The tray menu offers the collection, new note, the ten most recently pinned notes, and Quit. Platform adapters also provide macOS Dock menus, Windows Jump Lists, and Linux desktop actions. Linux launcher support depends on the desktop shell.
 
 `Ctrl/Cmd+N`: new note. `Ctrl/Cmd+S`: save. `Ctrl/Cmd+Q`: save all notes and quit. `Ctrl/Cmd+B/I/U`: formatting. `/` focuses collection search. Source-editor external links open with Ctrl/Cmd-click.
 
@@ -23,7 +23,7 @@ The Rust core is shared by the desktop application and MCP server. Saves use tem
 
 Settings, window geometry, request receipts, and recovery copies live outside vaults in the OS local application-data folder under `sticky-markers`. **Settings → Open local recovery copies** opens it. There are up to 30 snapshots per note; completed MCP request receipts retain up to 512 requests/32 MiB. Retries beyond this retention window require rereading the note. Delete uses OS Trash, falling back to a recovery copy if Trash is unavailable. Back up your vault using your preferred system; recovery is local and bounded.
 
-`STICKY_MARKERS_DATA_DIR` overrides application-data location for isolated testing. Markdown editing is limited to 10 MiB per file, attachments to 20 MiB. Hidden folders, symlink paths, and unsafe filenames are excluded. Frontmatter and CRLF are preserved; rename does not rewrite other notes' links.
+`STICKY_MARKERS_DATA_DIR` overrides application-data location for isolated testing. UTF-8 text editing is limited to 100 KiB per file, attachments to 20 MiB. Hidden folders, symlink paths, and unsafe filenames are excluded. Frontmatter and CRLF are preserved; rename does not rewrite other notes' links.
 
 ## Optional GitHub synced vaults
 
@@ -33,7 +33,7 @@ For a distributable build, register a GitHub OAuth app with **device flow enable
 
 Sync verifies repository identity and privacy, compares local and remote revisions against a baseline, and creates non-force commits. Conflicting files retain both versions in local recovery and require an explicit local/remote choice in Settings. A competing remote commit rejects the push rather than overwriting history. Local saving continues without network access. Sync on quit is bounded and offers quitting with upload deferred if unsuccessful.
 
-Sync includes Markdown and PNG/JPEG/GIF/WebP/SVG/PDF attachments; per-device settings and `.obsidian` are not synced. Whole-file conflicts require resolution even when edits affect different lines. The desktop must be running for scheduled uploads. Live GitHub authorization requires the OAuth registration above; mock API tests cover sync behavior, but an account-based end-to-end test has not been run in this workspace.
+Sync includes UTF-8 text notes and PNG/JPEG/GIF/WebP/SVG/PDF attachments; per-device settings and `.obsidian` are not synced. Whole-file conflicts require resolution even when edits affect different lines. The desktop must be running for scheduled uploads. Live GitHub authorization requires the OAuth registration above; mock API tests cover sync behavior, but an account-based end-to-end test has not been run in this workspace.
 
 ## MCP
 

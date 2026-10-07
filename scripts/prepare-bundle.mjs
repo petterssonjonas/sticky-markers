@@ -26,6 +26,7 @@ if (process.platform !== "win32") {
       if (name.startsWith("sticky-markers-mcp-")) chmodSync(join(sidecars, name), 0o755);
     }
   }
+  chmodSync(join(root, "packaging/linux/dev.stickymarkers.desktop.desktop"), 0o644);
   const icons = join(root, "src-tauri/icons");
   for (const name of readdirSync(icons)) chmodSync(join(icons, name), 0o644);
 }

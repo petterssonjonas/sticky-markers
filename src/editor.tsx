@@ -14,7 +14,8 @@ import {
   defaultKeymap,
   indentWithTab,
 } from "@codemirror/commands";
-import { markdown } from "@codemirror/lang-markdown";
+import { livePreview, type PreviewOptions } from "./live-preview";
+import { markdown, markdownKeymap } from "@codemirror/lang-markdown";
 import {
   syntaxHighlighting,
   defaultHighlightStyle,
@@ -36,6 +37,13 @@ export function formatEdit(
     underline: ["<u>", "</u>"],
     strike: ["~~", "~~"],
   };
+  if (/^heading[1-6]$/.test(kind)) {
+    const start = text.lastIndexOf("\n", from - 1) + 1;
+    const end = text.indexOf("\n", to);
+    const stop = end < 0 ? text.length : end;
+    const insert = text.slice(start, stop).split("\n").map((line) => `${"#".repeat(Number(kind.slice(-1)))} ${line.replace(/^#{1,6}\s+/, "")}`).join("\n");
+    return { from: start, to: stop, insert, anchor: start + insert.length };
+  }
   if (kind === "bullets") {
     const start = text.lastIndexOf("\n", from - 1) + 1;
     const selected = text.slice(start, to);
@@ -81,14 +89,20 @@ export const MarkdownEditor = forwardRef<
     dark: boolean;
     onLink?: (s: string) => void;
     readOnly?: boolean;
+    rendered?: boolean;
+    plain?: boolean;
+    preview?: PreviewOptions;
+    heading?: string;
   }
->(function Editor({ value, onChange, dark, onLink, readOnly = false }, ref) {
+>(function Editor({ value, onChange, dark, onLink, readOnly = false, rendered = false, plain = false, preview, heading }, ref) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const callback = useRef(onChange);
   callback.current = onChange;
   const theme = useRef(new Compartment());
   const editable = useRef(new Compartment());
+  const presentation = useRef(new Compartment());
+  const syntax = useRef(new Compartment());
   const externalChange = useRef(false);
   const lineEnding=useRef(value.includes('\r\n')?'\r\n':'\n');
   lineEnding.current=value.includes('\r\n')?'\r\n':'\n';
@@ -115,16 +129,15 @@ export const MarkdownEditor = forwardRef<
       state: EditorState.create({
         doc: value,
         extensions: [
-          lineNumbers(),
-          highlightActiveLineGutter(),
+          presentation.current.of(rendered && preview ? livePreview(preview) : [lineNumbers(), highlightActiveLineGutter()]),
           drawSelection(),
           highlightSpecialChars(),
           history(),
           editable.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
-          markdown(),
+          syntax.current.of(plain ? [] : markdown()),
           syntaxHighlighting(defaultHighlightStyle),
           EditorView.lineWrapping,
-          keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+          keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !externalChange.current)
               callback.current(u.state.doc.toString().replace(/\n/g,lineEnding.current));
@@ -176,6 +189,20 @@ export const MarkdownEditor = forwardRef<
       effects: theme.current.reconfigure(EditorView.theme({}, { dark })),
     });
   }, [dark]);
+  useEffect(() => {
+    view.current?.dispatch({ effects: [presentation.current.reconfigure(rendered && preview ? livePreview(preview) : [lineNumbers(), highlightActiveLineGutter()]), syntax.current.reconfigure(plain ? [] : markdown())] });
+  }, [rendered, plain, dark, preview?.vaultId, preview?.path]);
+  useEffect(() => {
+    if (!heading || !view.current) return;
+    const v = view.current;
+    const target = heading.toLowerCase().replace(/[-_]/g, " ");
+    for (let i = 1; i <= v.state.doc.lines; i++) {
+      const line = v.state.doc.line(i);
+      if (line.text.replace(/^#+\s*/, "").toLowerCase() === target) {
+        v.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: "start" }) }); break;
+      }
+    }
+  }, [heading]);
   useEffect(() => {
     view.current?.dispatch({ effects: editable.current.reconfigure([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]) });
   }, [readOnly]);

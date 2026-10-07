@@ -2,7 +2,11 @@
 mod platform;
 mod updates;
 use serde_json::{json, Value};
-use std::{collections::BTreeSet, path::Path, sync::Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Mutex,
+};
 use sticky_core::{message, Core, NoteStyle, Result, Settings};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -12,16 +16,37 @@ use tauri::{
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
 
+#[derive(Clone)]
+struct Draft {
+    vault: String,
+    path: Option<String>,
+    style: NoteStyle,
+}
 struct Shared {
     core: Core,
     quitting: Mutex<Option<BTreeSet<String>>>,
     abort_quit: Mutex<bool>,
+    drafts: Mutex<BTreeMap<String, Draft>>,
 }
 fn label(id: &str, path: &str) -> String {
     format!(
         "note-{}",
         &blake3::hash(format!("{id}/{path}").as_bytes()).to_hex()[..20]
     )
+}
+fn window_label(app: &AppHandle, id: &str, path: &str) -> String {
+    let shared = app.state::<Shared>();
+    let drafts = shared.drafts.lock().unwrap();
+    let alias = drafts
+        .iter()
+        .find(|(_, d)| d.vault == id && d.path.as_deref() == Some(path))
+        .map(|(k, _)| k.as_str());
+    label(id, alias.unwrap_or(path))
+}
+fn window_icon(app: &AppHandle, window: &tauri::WebviewWindow) {
+    if let Some(icon) = app.default_window_icon() {
+        let _ = window.set_icon(icon.clone());
+    }
 }
 fn show_main(app: &AppHandle) -> std::result::Result<(), String> {
     show_main_page(app, false)
@@ -35,7 +60,7 @@ fn show_main_page(app: &AppHandle, updates: bool) -> std::result::Result<(), Str
         }
         return Ok(());
     }
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         "main",
         WebviewUrl::App(
@@ -53,6 +78,7 @@ fn show_main_page(app: &AppHandle, updates: bool) -> std::result::Result<(), Str
     .decorations(false)
     .build()
     .map_err(|e| e.to_string())?;
+    window_icon(app, &window);
     Ok(())
 }
 fn open_note(
@@ -74,7 +100,7 @@ fn open_note_at(
         return Err("The app is saving notes before quitting".into());
     }
     core.read(id, path).map_err(|e| e.to_string())?;
-    let name = label(id, path);
+    let name = window_label(app, id, path);
     if let Some(w) = app.get_webview_window(&name) {
         w.show().map_err(|e| e.to_string())?;
         w.set_focus().map_err(|e| e.to_string())?;
@@ -98,6 +124,7 @@ fn open_note_at(
         .inner_size(s.width.max(340.0), s.height.max(240.0))
         .min_inner_size(340.0, 240.0);
     let w = builder.build().map_err(|e| e.to_string())?;
+    window_icon(app, &w);
     if let (Some(x), Some(y)) = (s.x, s.y) {
         if let Ok(monitors) = w.available_monitors() {
             if monitors.iter().any(|m| {
@@ -143,11 +170,37 @@ fn new_note(app: &AppHandle, core: &Core, id: Option<&str>) -> std::result::Resu
         show_main(app)?;
         return Ok(Value::Null);
     };
-    let d = core
-        .create(&id, None, "", None)
+    core.vault(&id).map_err(|e| e.to_string())?;
+    let token = format!("draft-{}", uuid::Uuid::new_v4());
+    let style = core
+        .style(&id, &format!("{token}.md"))
         .map_err(|e| e.to_string())?;
-    open_note(app, core, &id, &d.path)?;
-    Ok(json!(d))
+    app.state::<Shared>().drafts.lock().unwrap().insert(
+        token.clone(),
+        Draft {
+            vault: id.clone(),
+            path: None,
+            style: style.clone(),
+        },
+    );
+    let window = WebviewWindowBuilder::new(
+        app,
+        label(&id, &token),
+        WebviewUrl::App(format!("index.html?vault={}&note={}", encode(&id), encode(&token)).into()),
+    )
+    .title("New note")
+    .decorations(false)
+    .inner_size(style.width.max(340.0), style.height.max(240.0))
+    .min_inner_size(340.0, 240.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+    window_icon(app, &window);
+    Ok(json!(sticky_core::Document {
+        vault_id: id,
+        path: token,
+        content: String::new(),
+        revision: sticky_core::revision(b"")
+    }))
 }
 fn refresh_menu(app: &AppHandle, core: &Core) -> tauri::Result<()> {
     let menu = Menu::new(app)?;
@@ -178,17 +231,7 @@ fn refresh_menu(app: &AppHandle, core: &Core) -> tauri::Result<()> {
         None::<&str>,
     )?)?;
     if let Ok(c) = core.config() {
-        for (i, n) in c
-            .recent
-            .iter()
-            .filter(|n| {
-                core.resolve(&n.vault_id, &n.path)
-                    .map(|p| p.is_file())
-                    .unwrap_or(false)
-            })
-            .take(5)
-            .enumerate()
-        {
+        for (i, n) in core.pinned().unwrap_or_default().iter().enumerate() {
             let vault = c
                 .vaults
                 .iter()
@@ -240,17 +283,8 @@ fn menu_action(app: &AppHandle, id: &str) {
                 .strip_prefix("recent-")
                 .and_then(|s| s.parse::<usize>().ok())
             {
-                if let Ok(c) = core.config() {
-                    if let Some(n) = c
-                        .recent
-                        .iter()
-                        .filter(|n| {
-                            core.resolve(&n.vault_id, &n.path)
-                                .map(|p| p.is_file())
-                                .unwrap_or(false)
-                        })
-                        .nth(index)
-                    {
+                if core.config().is_ok() {
+                    if let Some(n) = core.pinned().unwrap_or_default().get(index) {
                         let _ = open_note(app, &core, &n.vault_id, &n.path);
                     }
                 }
@@ -373,11 +407,118 @@ async fn dispatch(
     .map_err(|e| e.to_string())?
 }
 fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
+    if let (Some(id), Some(token)) = (a["vaultId"].as_str(), a["path"].as_str()) {
+        if token.starts_with("draft-") {
+            let shared = app.state::<Shared>();
+            let mut drafts = shared.drafts.lock().unwrap();
+            if let Some(draft) = drafts.get_mut(token).filter(|d| d.vault == id) {
+                if draft.path.is_none() {
+                    match op {
+                        "read_note" => {
+                            return Ok(json!(sticky_core::Document {
+                                vault_id: id.into(),
+                                path: token.into(),
+                                content: String::new(),
+                                revision: sticky_core::revision(b"")
+                            }))
+                        }
+                        "set_style" => {
+                            let mut style: NoteStyle = serde_json::from_value(a["style"].clone())?;
+                            if !(10.0..=48.0).contains(&style.font_size) || style.color > 15 {
+                                return Err(message("Invalid note appearance"));
+                            }
+                            if style.pinned && !draft.style.pinned {
+                                style.pinned_at = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                                    as u64;
+                            }
+                            if style.pinned && draft.style.pinned {
+                                style.pinned_at = draft.style.pinned_at;
+                            }
+                            if !style.pinned {
+                                style.pinned_at = 0;
+                            }
+                            draft.style = style;
+                            return Ok(Value::Null);
+                        }
+                        "journal" => {
+                            let content = string(a, "content")?;
+                            if !content.is_empty() {
+                                core.journal(id, token, content)?;
+                            }
+                            return Ok(Value::Null);
+                        }
+                        "save_note" => {
+                            let content = string(a, "content")?;
+                            if content.is_empty() {
+                                return Ok(json!(sticky_core::Document {
+                                    vault_id: id.into(),
+                                    path: token.into(),
+                                    content: String::new(),
+                                    revision: sticky_core::revision(b"")
+                                }));
+                            }
+                            let doc = core.create(id, None, content, Some(token))?;
+                            draft.path = Some(doc.path.clone());
+                            let mut style = draft.style.clone();
+                            style.open = true;
+                            core.set_style(id, &doc.path, style)?;
+                            core.opened(id, &doc.path, true)?;
+                            if let Some(w) = app.get_webview_window(&label(id, token)) {
+                                let _ = w.set_title(&doc.path);
+                            }
+                            drop(drafts);
+                            let _ = app.emit("notes-changed", ());
+                            let _ = refresh_menu(app, core);
+                            return Ok(json!(doc));
+                        }
+                        "tuck_note" | "delete_note" => {
+                            drafts.remove(token);
+                            drop(drafts);
+                            if let Some(w) = app.get_webview_window(&label(id, token)) {
+                                w.destroy().map_err(|e| message(e.to_string()))?;
+                            }
+                            return Ok(Value::Null);
+                        }
+                        "rename_note" | "export_note" => {
+                            return Err(message(
+                                "Write something in this note before renaming or exporting it",
+                            ))
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(path) = draft.path.clone() {
+                    drop(drafts);
+                    let mut args = a.clone();
+                    args["path"] = json!(path);
+                    return route(app, core, op, &args);
+                }
+            }
+        }
+    }
     let id = || string(a, "vaultId");
     let path = || string(a, "path");
     let mut changed = false;
     let result = match op {
         "bootstrap" => json!(core.config()?),
+        "system_fonts" => {
+            static FONTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+            json!(FONTS.get_or_init(|| {
+                let mut db = fontdb::Database::new();
+                db.load_system_fonts();
+                let mut names: Vec<_> = db
+                    .faces()
+                    .flat_map(|f| f.families.iter().map(|(name, _)| name.clone()))
+                    .filter(|n| !n.chars().any(char::is_control))
+                    .collect();
+                names.sort_by_key(|a| a.to_lowercase());
+                names.dedup();
+                names
+            }))
+        }
         "register_vault" => {
             changed = true;
             json!(core.register(Path::new(path()?))?)
@@ -396,18 +537,13 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
         "search_notes" => json!(core.search(id()?, string(a, "query")?)?),
         "read_note" => json!(core.read(id()?, path()?)?),
         "import_note" => {
-            if let Some(source) = app
-                .dialog()
-                .file()
-                .add_filter("Markdown", &["md"])
-                .blocking_pick_file()
-            {
+            if let Some(source) = app.dialog().file().blocking_pick_file() {
                 let source = source.into_path().map_err(|e| message(e.to_string()))?;
                 let name = source
                     .file_name()
                     .and_then(|s| s.to_str())
                     .ok_or_else(|| message("Invalid filename"))?;
-                let content = std::fs::read_to_string(&source)?;
+                let content = sticky_core::read_text(&source)?;
                 let document = core.create(id()?, Some(name), &content, None)?;
                 changed = true;
                 json!(document)
@@ -446,7 +582,7 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
         }
         "tuck_note" => {
             core.opened(id()?, path()?, false)?;
-            if let Some(w) = app.get_webview_window(&label(id()?, path()?)) {
+            if let Some(w) = app.get_webview_window(&window_label(app, id()?, path()?)) {
                 w.destroy().map_err(|e| message(e.to_string()))?;
             }
             changed = true;
@@ -454,7 +590,7 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
         }
         "delete_note" => {
             core.delete(id()?, path()?, string(a, "expected")?)?;
-            if let Some(w) = app.get_webview_window(&label(id()?, path()?)) {
+            if let Some(w) = app.get_webview_window(&window_label(app, id()?, path()?)) {
                 w.destroy().map_err(|e| message(e.to_string()))?;
             }
             changed = true;
@@ -467,7 +603,7 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
                 string(a, "newPath")?,
                 string(a, "expected")?,
             )?;
-            if let Some(w) = app.get_webview_window(&label(id()?, path()?)) {
+            if let Some(w) = app.get_webview_window(&window_label(app, id()?, path()?)) {
                 w.destroy().map_err(|e| message(e.to_string()))?;
             }
             open_note(app, core, id()?, &d.path).map_err(message)?;
@@ -485,6 +621,18 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
             s.x = current.x;
             s.y = current.y;
             s.open = current.open;
+            if s.pinned && !current.pinned {
+                s.pinned_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+            }
+            if s.pinned && current.pinned {
+                s.pinned_at = current.pinned_at;
+            }
+            if !s.pinned {
+                s.pinned_at = 0;
+            }
             core.set_style(id()?, path()?, s)?;
             changed = true;
             Value::Null
@@ -538,7 +686,6 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
                 .dialog()
                 .file()
                 .set_file_name(path()?.split('/').next_back().unwrap_or("Note.md"))
-                .add_filter("Markdown", &["md"])
                 .blocking_save_file()
             {
                 let dest = p.into_path().map_err(|e| message(e.to_string()))?;
@@ -672,6 +819,7 @@ fn main() {
             core: core.clone(),
             quitting: Mutex::new(None),
             abort_quit: Mutex::new(false),
+            drafts: Mutex::new(BTreeMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             dispatch,
@@ -698,6 +846,8 @@ fn main() {
             }
             let _ = tray.build(app);
             platform::init(app.handle());
+            #[cfg(target_os = "linux")]
+            platform::refresh(app.handle(), &core);
             updates::start_scheduler(app.handle());
             let args = std::env::args().collect::<Vec<_>>();
             if !platform::handle_args(app.handle(), &core, &args) {
@@ -760,13 +910,22 @@ fn main() {
             if !w.label().starts_with("note-") {
                 return;
             }
+            if let tauri::WindowEvent::Destroyed = event {
+                let shared = w.app_handle().state::<Shared>();
+                shared
+                    .drafts
+                    .lock()
+                    .unwrap()
+                    .retain(|token, d| label(&d.vault, token) != w.label());
+                return;
+            }
             let core = w.app_handle().state::<Shared>().core.clone();
             if let Ok(c) = core.config() {
                 for v in c.vaults {
                     for (key, mut s) in c.styles.clone() {
                         let prefix = format!("{}/", v.id);
                         if let Some(path) = key.strip_prefix(&prefix) {
-                            if label(&v.id, path) != w.label() {
+                            if window_label(w.app_handle(), &v.id, path) != w.label() {
                                 continue;
                             }
                             let scale = w.scale_factor().unwrap_or(1.0);

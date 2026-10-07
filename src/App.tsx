@@ -39,6 +39,9 @@ import {
   Download,
   Upload,
   Copy,
+  Pin,
+  List,
+  Heading,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -68,12 +71,14 @@ function Button({
   onClick,
   className = "",
   disabled = false,
+  pressed,
 }: {
   label: string;
   children: ReactNode;
   onClick: () => void;
   className?: string;
   disabled?: boolean;
+  pressed?: boolean;
 }) {
   return (
     <button
@@ -82,6 +87,7 @@ function Button({
       title={label}
       onClick={onClick}
       disabled={disabled}
+      aria-pressed={pressed}
     >
       {children}
     </button>
@@ -260,7 +266,7 @@ function Collection({
             .toLowerCase()
             .includes(query.toLowerCase())) &&
       (!folder || n.path.startsWith(folder + "/")) &&
-      (filter === "all" || config.styles[`${n.vaultId}/${n.path}`]?.open),
+      (filter === "all" || config.styles[`${n.vaultId}/${n.path}`]?.pinned),
   );
   return (
     <div className="collection">
@@ -331,14 +337,14 @@ function Collection({
           All notes<span>{notes.length}</span>
         </button>
         <button
-          className={`nav-item ${filter === "open" ? "selected" : ""}`}
-          onClick={() => setFilter("open")}
+          className={`nav-item ${filter === "pinned" ? "selected" : ""}`}
+          onClick={() => setFilter("pinned")}
         >
           <PanelLeft size={17} />
-          On your desktop
+          Pinned notes
           <span>
             {
-              notes.filter((n) => config.styles[`${n.vaultId}/${n.path}`]?.open)
+              notes.filter((n) => config.styles[`${n.vaultId}/${n.path}`]?.pinned)
                 .length
             }
           </span>
@@ -354,7 +360,7 @@ function Collection({
         <div className="sidebar-bottom">
           {desktop && active && (
             <button className="nav-item" onClick={() => void run(() => call("import_note", { vaultId: active.id }))}>
-              <Upload size={17} />Import Markdown
+              <Upload size={17} />Import note
             </button>
           )}
           {active?.github && (
@@ -435,7 +441,7 @@ function Collection({
             <h2>Make yourself a little space.</h2>
             <p>
               Choose a folder, open an Obsidian vault, or create a private
-              GitHub synced vault. Your notes stay ordinary Markdown files.
+              GitHub synced vault. Your notes stay ordinary text files.
             </p>
             <button
               className="primary"
@@ -459,10 +465,10 @@ function Collection({
                   All notes <span>{notes.length}</span>
                 </button>
                 <button
-                  className={filter === "open" ? "active" : ""}
-                  onClick={() => setFilter("open")}
+                  className={filter === "pinned" ? "active" : ""}
+                  onClick={() => setFilter("pinned")}
                 >
-                  Open notes
+                  Pinned notes
                 </button>
               </div>
               <select
@@ -530,15 +536,15 @@ function Collection({
                       <ArrowUpRight size={17} />
                     </div>
                     <h2>{n.title || "Untitled note"}</h2>
-                    <p>{n.preview.replace(/[#*`_]/g, "")}</p>
+                    <div className="card-preview"><Suspense fallback={null}>{/\.(md|markdown|mdown)$/i.test(n.path) ? <Markdown content={n.preview.replace(/^#{1,6} [^\n]*(?:\r?\n)?/, "")} dark={dark} vaultId={n.vaultId} path={n.path} onWiki={() => {}} preview /> : <pre>{n.preview}</pre>}</Suspense></div>
                     <div className="card-bottom">
                       <span>
                         <FileText size={12} />
                         {n.path.includes("/")
                           ? n.path.split("/").slice(0, -1).join("/")
-                          : "Markdown note"}
+                          : (/\.(md|markdown|mdown)$/i.test(n.path) ? "Markdown note" : "Text note")}
                       </span>
-                      {s.open && <span className="open-badge">Open</span>}
+                      {s.pinned && <span className="open-badge"><Pin size={12}/> Pinned</span>}
                     </div>
                   </button>
                 );
@@ -603,7 +609,9 @@ function NoteWindow({
     config.styles[`${vaultId}/${path}`] ?? defaultStyle(config.settings),
   );
   const [menu, setMenu] = useState(false);
-  const [status, setStatus] = useState("Saved locally");
+  const [headings, setHeadings] = useState(false);
+  const [systemFonts, setSystemFonts] = useState<string[]>([]);
+  const [status, setStatus] = useState(path.startsWith("draft-") ? "Empty draft" : "Saved locally");
   const [error, setError] = useState("");
   const editor = useRef<EditorHandle>(null);
   const current = useRef("");
@@ -618,11 +626,17 @@ function NoteWindow({
   const journalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const vault = config.vaults.find((v) => v.id === vaultId);
   const c = colors(style.palette, style.color, dark);
+  const actualPath = document?.path ?? path;
+  const plain = !path.startsWith("draft-") && !/\.(md|markdown|mdown)$/i.test(actualPath);
+  useEffect(() => {
+    if (menu && !systemFonts.length) void call<string[]>("system_fonts").then(setSystemFonts).catch((e) => setError(String(e)));
+  }, [menu]);
   const flush = useCallback(async () => {
     if (timer.current) {
       clearTimeout(timer.current);
       timer.current = null;
     }
+    if (journalTimer.current) { clearTimeout(journalTimer.current); journalTimer.current = null; }
     if (pending.current) await pending.current;
     while (saved.current && current.current !== saved.current.content) {
       const content = current.current,
@@ -678,12 +692,17 @@ function NoteWindow({
           current.current = d.content;
           setDocument(d);
           setText(d.content);
+          const persistedStyle = config.styles[`${vaultId}/${d.path}`];
+          if (persistedStyle) setStyle(persistedStyle);
+          else if (!/\.(md|markdown|mdown)$/i.test(d.path) && !d.path.startsWith("draft-")) setStyle((s) => ({ ...s, mode: "edit", font: "mono" }));
+          setStatus(d.path.startsWith("draft-") ? "Empty draft" : "Saved locally");
         }
       })
       .catch((e) => setError(String(e)));
     return () => {
       live = false;
       if (timer.current) clearTimeout(timer.current);
+      if (journalTimer.current) clearTimeout(journalTimer.current);
       if (journalTimer.current) clearTimeout(journalTimer.current);
     };
   }, [vaultId, path]);
@@ -756,8 +775,7 @@ function NoteWindow({
           .catch((e) => setError(String(e)));
       } else if (["b", "i", "u"].includes(k)) {
         e.preventDefault();
-        if (styleRef.current.mode === "edit")
-          editor.current?.format(
+        editor.current?.format(
             { b: "bold", i: "italic", u: "underline" }[k]!,
           );
       }
@@ -812,11 +830,7 @@ function NoteWindow({
   }, [vaultId, path]);
   const format = (kind: string) => {
     if (closing.current) return;
-    if (style.mode === "view") {
-      void updateStyle({ mode: "edit" }).then(() =>
-        setTimeout(() => editor.current?.format(kind), 20),
-      );
-    } else editor.current?.format(kind);
+    editor.current?.format(kind);
   };
   const newNote = async () => {
     if (closing.current) return;
@@ -885,7 +899,7 @@ function NoteWindow({
           "--paper": c.body,
           "--header": c.header,
           "--ink": c.ink,
-          "--note-font": fonts[style.font] ?? fonts.sans,
+          "--note-font": fonts[style.font] ?? `${JSON.stringify(style.font)}, system-ui, sans-serif`,
           "--note-font-size": `${style.fontSize}px`,
         } as CSSProperties
       }
@@ -894,19 +908,22 @@ function NoteWindow({
         <Button label="New note" onClick={() => void newNote()}>
           <Plus size={19} />
         </Button>
+        <Button label={style.pinned ? "Unpin note" : "Pin note"} pressed={!!style.pinned} onClick={() => void updateStyle({ pinned: !style.pinned, pinnedAt: !style.pinned ? Date.now() : 0 })}><Pin size={17} /></Button>
         <div
           className="note-drag"
           data-tauri-drag-region
-          title={`${vault?.name} / ${path}`}
+          title={`${vault?.name} / ${actualPath}`}
         >
-          {path.split("/").pop()?.replace(/\.md$/i, "")}
+          {actualPath.startsWith("draft-") ? "New note" : actualPath.split("/").pop()?.replace(/\.(md|markdown|mdown)$/i, "")}
         </div>
+        <span className={`note-save-status ${status === "Unsaved" || status === "Not saved" || status === "Conflict" ? "save-warning" : ""}`} role="status"><span className="status-dot" />{status}</span>
         <div className="format-buttons">
           {[
             [Bold, "bold"],
             [Italic, "italic"],
             [Underline, "underline"],
             [Strikethrough, "strike"],
+            [List, "bullets"],
           ].map(([Icon, kind]) => {
             const I = Icon as typeof Bold;
             return (
@@ -919,6 +936,9 @@ function NoteWindow({
               </Button>
             );
           })}
+          <div className="heading-control"><Button label="Insert heading" onClick={() => setHeadings(!headings)}><Heading size={15}/><ChevronDown size={10}/></Button>
+            {headings && <div className="heading-menu">{[1,2,3,4,5,6].map((n) => <button key={n} onClick={() => { format(`heading${n}`); setHeadings(false); }}>Heading {n} <span>{"#".repeat(n)}</span></button>)}</div>}
+          </div>
         </div>
         <Button label="Note menu" onClick={() => setMenu(!menu)}>
           <Menu size={19} />
@@ -931,6 +951,8 @@ function NoteWindow({
         <>
           <div className="menu-dismiss" onClick={() => setMenu(false)} />
           <div className="note-menu">
+            <div className="menu-vault"><FolderOpen size={13}/>{vault?.name}</div>
+            <div className="menu-save-status" role="status"><span className="status-dot"/>{status}</div>
             <div className="menu-label">A COLOR FOR YOUR THOUGHT</div>
             <select
               aria-label="Color palette"
@@ -970,10 +992,12 @@ function NoteWindow({
               </button>
               <button
                 className={style.mode === "view" ? "active" : ""}
+                disabled={plain}
+                title={plain ? "Rendered mode is available for Markdown notes" : undefined}
                 onClick={() => void mode("view")}
               >
                 <Eye size={14} />
-                View
+                Rendered mode
               </button>
             </div>
             <div className="font-controls">
@@ -987,6 +1011,8 @@ function NoteWindow({
                   <option value="sans">Sans serif</option>
                   <option value="serif">Serif</option>
                   <option value="mono">Monospace</option>
+                  {style.font && !["sans", "serif", "mono", ...systemFonts].includes(style.font) && <option value={style.font}>{style.font}</option>}
+                  <optgroup label="System fonts">{systemFonts.map((font) => <option value={font} key={font}>{font}</option>)}</optgroup>
                 </select>
               </label>
               <label>
@@ -1008,15 +1034,6 @@ function NoteWindow({
                 />
               </label>
             </div>
-            <button
-              className="menu-action"
-              onClick={() => {
-                format("bullets");
-                setMenu(false);
-              }}
-            >
-              Insert bullet list
-            </button>
             <button
               className="menu-action"
               onClick={() => {
@@ -1043,14 +1060,14 @@ function NoteWindow({
               }
             >
               <Download size={15} />
-              Export Markdown
+              Export note
             </button>
             <button
               className="menu-action"
               onClick={() => {
                 const newPath = prompt(
-                  "New vault-relative filename (.md). Links in other notes will not be rewritten.",
-                  path,
+                  "New vault-relative filename. Links in other notes will not be rewritten.",
+                  actualPath.startsWith("draft-") ? "Note.md" : actualPath,
                 );
                 if (newPath && newPath !== path)
                   void flush()
@@ -1065,7 +1082,7 @@ function NoteWindow({
                     .catch((e) => setError(String(e)));
               }}
             >
-              Rename Markdown file
+              Rename note
             </button>
             <button
               className="menu-action danger"
@@ -1100,49 +1117,10 @@ function NoteWindow({
       <div className="note-content">
         <Suspense fallback={<div className="loading">Opening your note…</div>}>
           {document ? (
-            style.mode === "edit" ? (
-              <MarkdownEditor
-              readOnly={finishing}
-                ref={editor}
-                value={text}
-                onChange={change}
-                dark={dark}
-                onLink={(u) => void external(u)}
-              />
-            ) : (
-              <Markdown
-                content={text}
-                dark={dark}
-                vaultId={vaultId}
-                path={path}
-                onWiki={(t) => void wiki(t)}
-                heading={heading}
-              />
-            )
-          ) : (
-            <div className="loading">Opening your note…</div>
-          )}
+            <MarkdownEditor readOnly={finishing} ref={editor} value={text} onChange={change} dark={dark} onLink={(u) => void external(u)} rendered={style.mode === "view" && !plain} plain={plain} preview={{ dark, vaultId, path: actualPath, onWiki: (t) => void wiki(t) }} heading={heading} />
+          ) : <div className="loading">Opening your note…</div>}
         </Suspense>
       </div>
-      <footer className="note-footer">
-        <span
-          className={
-            status.includes("saved") || status === "Conflict"
-              ? "save-warning"
-              : ""
-          }
-        >
-          <span className="status-dot" />
-          {status}
-        </span>
-        <button
-          onClick={() => void mode(style.mode === "edit" ? "view" : "edit")}
-        >
-          {style.mode === "edit" ? <Code2 size={12} /> : <Eye size={12} />}{" "}
-          {style.mode === "edit" ? "Markdown" : "Reading"}
-        </button>
-        <span>{vault?.name}</span>
-      </footer>
       {!desktop && (
         <button className="demo-back" onClick={() => void call("show_main")}>
           <ArrowLeft size={14} />
@@ -1235,6 +1213,8 @@ function SettingsDialog({
       clearInterval(timer);
     };
   }, [device, settings.githubClientId]);
+  const [systemFonts, setSystemFonts] = useState<string[]>([]);
+  useEffect(() => { void call<string[]>("system_fonts").then(setSystemFonts).catch((e) => setError(String(e))); }, []);
   const field = (patch: Partial<Settings>) =>
     setSettings((s) => ({ ...s, ...patch }));
   return (
@@ -1310,7 +1290,7 @@ function SettingsDialog({
               <label className="setting-row">
                 <span>
                   <strong>New notes open in</strong>
-                  <small>Start typing, or start reading.</small>
+                  <small>Both modes are editable. Rendered mode previews Markdown as you type.</small>
                 </span>
                 <select
                   value={settings.mode}
@@ -1319,7 +1299,7 @@ function SettingsDialog({
                   }
                 >
                   <option value="edit">Edit mode</option>
-                  <option value="view">View mode</option>
+                  <option value="view">Rendered mode</option>
                 </select>
               </label>
               <div className="setting-row">
@@ -1369,6 +1349,8 @@ function SettingsDialog({
                   <option value="sans">Sans serif</option>
                   <option value="serif">Serif</option>
                   <option value="mono">Monospace</option>
+                  {settings.font && !["sans", "serif", "mono", ...systemFonts].includes(settings.font) && <option value={settings.font}>{settings.font}</option>}
+                  <optgroup label="System fonts">{systemFonts.map((font) => <option key={font} value={font}>{font}</option>)}</optgroup>
                 </select>
               </label>
               <label className="setting-row">

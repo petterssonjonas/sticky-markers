@@ -36,39 +36,37 @@ mod linux_menu {
         )
     }
     pub fn refresh(core: &Core) -> sticky_core::Result<()> {
-        let data = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .ok_or_else(|| sticky_core::message("No desktop data directory"))?;
-        let entry = data.join("applications/Sticky Markers.desktop");
+        let data = if std::env::var_os("FLATPAK_ID").is_some() {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
+        } else {
+            std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        }
+        .ok_or_else(|| sticky_core::message("No desktop data directory"))?;
+        let entry = data.join("applications/dev.stickymarkers.desktop.desktop");
         if entry.exists() && !fs::read_to_string(&entry)?.contains("X-StickyMarkers-Owned=true") {
             return Ok(());
         }
         let exe = std::env::var_os("APPIMAGE")
             .map(PathBuf::from)
             .unwrap_or(std::env::current_exe()?);
-        let exe = arg(&exe.to_string_lossy());
+        let exe = if std::env::var_os("FLATPAK_ID").is_some() {
+            "flatpak run dev.stickymarkers.desktop".to_owned()
+        } else {
+            arg(&exe.to_string_lossy())
+        };
         let icon = core.data.join("desktop-icon.png");
         if !icon.exists() {
             sticky_core::atomic_write(&icon, include_bytes!("../icons/icon.png"))?;
         }
-        let c = core.config()?;
-        let recent = c
-            .recent
-            .iter()
-            .filter(|n| {
-                core.resolve(&n.vault_id, &n.path)
-                    .map(|p| p.is_file())
-                    .unwrap_or(false)
-            })
-            .take(5)
-            .collect::<Vec<_>>();
+        let recent = core.pinned()?;
         let actions = recent
             .iter()
             .enumerate()
             .map(|(i, _)| format!("Recent{i};"))
             .collect::<String>();
-        let mut content=format!("[Desktop Entry]\nType=Application\nName=Sticky Markers\nComment=Markdown sticky notes\nExec={exe}\nIcon={}\nTerminal=false\nCategories=Utility;Office;\nStartupWMClass=Sticky-markers\nX-StickyMarkers-Owned=true\nActions=Main;New;{actions}\n\n[Desktop Action Main]\nName=Open Main Window\nExec={exe} --main\n\n[Desktop Action New]\nName=New Note\nExec={exe}\n",icon.display());
+        let mut content=format!("[Desktop Entry]\nType=Application\nName=Sticky Markers\nComment=Markdown sticky notes\nExec={exe}\nIcon={}\nTerminal=false\nCategories=Utility;Office;\nStartupWMClass=dev.stickymarkers.desktop\nX-StickyMarkers-Owned=true\nActions=Main;New;{actions}\n\n[Desktop Action Main]\nName=Open Main Window\nExec={exe} --main\n\n[Desktop Action New]\nName=New Note\nExec={exe}\n",icon.display());
         for (i, n) in recent.iter().enumerate() {
             let title = n.path.trim_end_matches(".md").replace(['\n', '\r'], " ");
             content.push_str(&format!(
@@ -77,7 +75,18 @@ mod linux_menu {
                 arg(&n.path)
             ));
         }
-        sticky_core::atomic_write(&entry, content.as_bytes())
+        sticky_core::atomic_write(&entry, content.as_bytes())?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o644))?;
+        // Retire only our own legacy launcher, preserving user-created entries.
+        let legacy = data.join("applications/Sticky Markers.desktop");
+        if fs::read_to_string(&legacy)
+            .map(|s| s.contains("X-StickyMarkers-Owned=true"))
+            .unwrap_or(false)
+        {
+            fs::remove_file(legacy)?;
+        }
+        Ok(())
     }
 }
 pub fn handle_args(app: &AppHandle, core: &Core, args: &[String]) -> bool {
@@ -134,21 +143,7 @@ mod windows_menu {
         out
     }
     pub fn refresh(_app: &AppHandle, core: &Core) -> windows::core::Result<()> {
-        let recent = core
-            .config()
-            .ok()
-            .map(|c| {
-                c.recent
-                    .into_iter()
-                    .filter(|n| {
-                        core.resolve(&n.vault_id, &n.path)
-                            .map(|p| p.is_file())
-                            .unwrap_or(false)
-                    })
-                    .take(5)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let recent = core.pinned().unwrap_or_default();
         let exe = std::env::current_exe()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -244,18 +239,8 @@ mod macos {
                     ("New Note".into(), "new".into()),
                 ];
                 let core = app.state::<super::super::Shared>().core.clone();
-                if let Ok(c) = core.config() {
-                    for (i, n) in c
-                        .recent
-                        .iter()
-                        .filter(|n| {
-                            core.resolve(&n.vault_id, &n.path)
-                                .map(|p| p.is_file())
-                                .unwrap_or(false)
-                        })
-                        .take(5)
-                        .enumerate()
-                    {
+                if core.config().is_ok() {
+                    for (i, n) in core.pinned().unwrap_or_default().iter().enumerate() {
                         entries
                             .push((n.path.trim_end_matches(".md").into(), format!("recent-{i}")));
                     }

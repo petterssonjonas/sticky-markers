@@ -35,6 +35,8 @@ export interface NoteStyle {
   fontSize: number;
   mode: "edit" | "view";
   open: boolean;
+  pinned: boolean;
+  pinnedAt: number;
   width: number;
   height: number;
   x: number | null;
@@ -63,7 +65,7 @@ export interface Config {
 export const defaults: Settings = {
   width: 380,
   height: 440,
-  mode: "edit",
+  mode: "view",
   appearance: "system",
   palette: "classic",
   color: 0,
@@ -73,5 +75,5 @@ export const defaults: Settings = {
   checkUpdates: true,
 };
 export function defaultStyle(settings: Settings): NoteStyle {
-  return { ...settings, open: false, x: null, y: null };
+  return { ...settings, open: false, pinned: false, pinnedAt: 0, x: null, y: null };
 }

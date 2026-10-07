@@ -130,6 +130,7 @@ export function Markdown({
   path,
   onWiki,
   heading,
+  preview = false,
 }: {
   content: string;
   dark: boolean;
@@ -137,6 +138,7 @@ export function Markdown({
   path: string;
   onWiki: (target: string) => void;
   heading?: string;
+  preview?: boolean;
 }) {
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -165,7 +167,7 @@ export function Markdown({
                 {children}
               </code>
             ),
-          a: ({ href, children }) => (
+          a: ({ href, children }) => preview ? <span>{children}</span> : (
             <a
               href={href}
               onClick={(e) => {

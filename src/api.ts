@@ -52,6 +52,8 @@ function load(): Demo {
       color: [0, 3, 5, 1, 8][i],
       mode: "view",
       open: false,
+      pinned: false,
+      pinnedAt: 0,
       x: null,
       y: null,
     };
@@ -77,16 +79,28 @@ function navigate(vaultId?: string, path?: string) {
   history.pushState(null, "", `/${q}`);
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
+const drafts = new Map<string, { path?: string; style?: NoteStyle }>();
+function autoName(content: string, files: Record<string, string>) {
+  const stem = (content.split("\n").find((line) => line.trim()) ?? "Note").split(/[^\p{L}\p{N}]+/u).filter(Boolean).join("_").slice(0, 20).replace(/_+$/, "") || "Note";
+  let path = `${stem}.md`, i = 2;
+  while (path in files) { const suffix = `_${i++}`; path = `${stem.slice(0, 20 - suffix.length)}${suffix}.md`; }
+  return path;
+}
 async function demoCall<T>(
   operation: string,
   args: Record<string, unknown>,
 ): Promise<T> {
   const d = load();
-  const id = String(args.vaultId ?? "demo"),
-    path = String(args.path ?? "");
+  const id = String(args.vaultId ?? "demo");
+  let path = String(args.path ?? "");
+  const draft = drafts.get(path);
+  if (draft?.path) path = draft.path;
   let out: unknown = null;
   const doc = async (p: string): Promise<Document> => {
-    if (!(p in d.files)) throw new Error("Note no longer exists");
+    if (!(p in d.files)) {
+      if (drafts.has(p)) return { vaultId: id, path: p, content: "", revision: await hash("") };
+      throw new Error("Note no longer exists");
+    }
     return {
       vaultId: id,
       path: p,
@@ -108,7 +122,7 @@ async function demoCall<T>(
               .split("\n")
               .find((l) => l.trim())
               ?.replace(/^#+\s*/, "") ?? p,
-          preview: s.split("\n").slice(2).join(" ").slice(0, 220),
+          preview: s.slice(0, 4096),
           modified: Date.now() / 1000 - i * 3600,
         }),
       );
@@ -127,7 +141,7 @@ async function demoCall<T>(
                 .split("\n")
                 .find((l) => l.trim())
                 ?.replace(/^#+\s*/, "") ?? p,
-            preview: s.split("\n").slice(2).join(" ").slice(0, 220),
+            preview: s.slice(0, 4096),
             modified: Date.now() / 1000 - i * 3600,
           }),
         );
@@ -136,6 +150,13 @@ async function demoCall<T>(
       out = await doc(path);
       break;
     case "save_note": {
+      if (new TextEncoder().encode(String(args.content)).length > 100 * 1024) throw new Error("Note exceeds the 100 KiB editing limit");
+      if (draft && !draft.path && String(args.content)) {
+        draft.path = autoName(String(args.content), d.files);
+        path = draft.path;
+        d.files[path] = "";
+        d.config.styles[`${id}/${path}`] = { ...defaults, open: true, pinned: false, pinnedAt: 0, x: null, y: null, ...draft.style };
+      }
       const n = await doc(path);
       if (n.revision !== args.expected)
         throw new Error(
@@ -146,8 +167,8 @@ async function demoCall<T>(
       break;
     }
     case "new_note": {
-      const p = `Note-${Date.now()}.md`;
-      d.files[p] = "";
+      const p = `draft-${crypto.randomUUID()}`;
+      drafts.set(p, {});
       out = await doc(p);
       persist(d);
       navigate(id, p);
@@ -164,6 +185,7 @@ async function demoCall<T>(
       navigate();
       return null as T;
     case "tuck_note":
+      if (draft && !draft.path) { drafts.delete(String(args.path)); navigate(); return null as T; }
       d.config.styles[`${id}/${path}`] = {
         ...d.config.styles[`${id}/${path}`],
         open: false,
@@ -189,13 +211,17 @@ async function demoCall<T>(
       return (await doc(target)) as T;
     }
     case "set_style":
-      d.config.styles[`${id}/${path}`] = args.style as NoteStyle;
+      if (draft && !draft.path) draft.style = args.style as NoteStyle;
+      else d.config.styles[`${id}/${path}`] = args.style as NoteStyle;
       break;
     case "set_settings":
       d.config.settings = args.settings as Settings;
       break;
     case "select_vault":
       d.config.activeVault = id;
+      break;
+    case "system_fonts":
+      out = ["Arial", "DejaVu Sans", "Liberation Serif"];
       break;
     case "journal":
       break;

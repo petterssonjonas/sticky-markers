@@ -14,7 +14,8 @@
     "windows": [],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: https:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'"
-    }
+    },
+    "enableGTKAppId": true
   },
   "bundle": {
     "active": true,
@@ -28,11 +29,17 @@
     "shortDescription": "Markdown notes, one little window at a time.",
     "linux": {
       "deb": {
-        "desktopTemplate": "linux.desktop.hbs"
+        "desktopTemplate": "linux.desktop.hbs",
+        "files": {
+          "/usr/share/applications/dev.stickymarkers.desktop.desktop": "../packaging/linux/dev.stickymarkers.desktop.desktop"
+        }
       },
       "rpm": {
-        "release": "2",
-        "desktopTemplate": "linux.desktop.hbs"
+        "release": "3",
+        "desktopTemplate": "linux.desktop.hbs",
+        "files": {
+          "/usr/share/applications/dev.stickymarkers.desktop.desktop": "../packaging/linux/dev.stickymarkers.desktop.desktop"
+        }
       }
     },
     "windows": {

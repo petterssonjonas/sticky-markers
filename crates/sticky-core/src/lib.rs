@@ -6,11 +6,62 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
+
+pub const NOTE_LIMIT: usize = 100 * 1024;
+
+pub fn read_text(path: &Path) -> Result<String> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take((NOTE_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > NOTE_LIMIT {
+        return Err(message("Note exceeds the 100 KiB editing limit"));
+    }
+    let content = String::from_utf8(bytes).map_err(|_| message("Notes must be UTF-8 text"))?;
+    validate_content(&content)?;
+    Ok(content)
+}
+
+pub fn is_markdown(path: &str) -> bool {
+    ["md", "markdown", "mdown"].contains(
+        &path
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+    )
+}
+
+pub fn note_name(content: &str) -> String {
+    let line = strip_frontmatter(content)
+        .lines()
+        .find(|s| !s.trim().is_empty())
+        .unwrap_or("Note");
+    let words = line
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    let mut stem: String = words.chars().take(20).collect();
+    stem = stem.trim_matches('_').to_owned();
+    if stem.is_empty() {
+        stem = "Note".into();
+    }
+    let reserved = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if reserved.contains(&stem.to_ascii_uppercase().as_str()) {
+        stem.insert(0, '_');
+    }
+    stem
+}
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
@@ -86,7 +137,7 @@ impl Default for Settings {
         Self {
             width: 380.0,
             height: 440.0,
-            mode: "edit".into(),
+            mode: "view".into(),
             appearance: "system".into(),
             palette: "classic".into(),
             color: 0,
@@ -106,6 +157,8 @@ pub struct NoteStyle {
     pub font_size: f64,
     pub mode: String,
     pub open: bool,
+    pub pinned: bool,
+    pub pinned_at: u64,
     pub width: f64,
     pub height: f64,
     pub x: Option<f64>,
@@ -121,6 +174,8 @@ impl Default for NoteStyle {
             font_size: s.font_size,
             mode: s.mode,
             open: false,
+            pinned: false,
+            pinned_at: 0,
             width: s.width,
             height: s.height,
             x: None,
@@ -264,9 +319,6 @@ impl Core {
         safe_path(Path::new(&v.path), relative)
     }
     fn note_path(&self, id: &str, relative: &str) -> Result<PathBuf> {
-        if !relative.to_lowercase().ends_with(".md") {
-            return Err(message("Notes must be Markdown (.md) files"));
-        }
         self.resolve(id, relative)
     }
     pub fn list(&self, id: &str) -> Result<Vec<Note>> {
@@ -282,10 +334,9 @@ impl Core {
         {
             let e = entry.map_err(|e| message(e.to_string()))?;
             if !e.file_type().is_file()
-                || e.path()
-                    .extension()
-                    .map(|s| s.to_string_lossy().to_lowercase())
-                    != Some("md".into())
+                || e.metadata()
+                    .map(|m| m.len() > NOTE_LIMIT as u64)
+                    .unwrap_or(true)
             {
                 continue;
             }
@@ -295,7 +346,9 @@ impl Core {
                 .map_err(|e| message(e.to_string()))?
                 .to_string_lossy()
                 .replace('\\', "/");
-            let content = fs::read_to_string(e.path())?;
+            let Ok(content) = read_text(e.path()) else {
+                continue;
+            };
             let body = strip_frontmatter(&content);
             let title = body
                 .lines()
@@ -319,14 +372,7 @@ impl Core {
                 vault_id: id.into(),
                 path: relative,
                 title,
-                preview: body
-                    .lines()
-                    .take(5)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .chars()
-                    .take(220)
-                    .collect(),
+                preview: body.chars().take(4096).collect(),
                 modified: e
                     .metadata()
                     .ok()
@@ -341,13 +387,8 @@ impl Core {
     }
     pub fn read(&self, id: &str, path: &str) -> Result<Document> {
         let p = self.note_path(id, path)?;
-        let bytes = fs::read(p)?;
-        if bytes.len() > 10 * 1024 * 1024 {
-            return Err(message("Note exceeds the 10 MiB editing limit"));
-        }
-        let rev = revision(&bytes);
-        let content =
-            String::from_utf8(bytes).map_err(|_| message("This note is not valid UTF-8"))?;
+        let content = read_text(&p)?;
+        let rev = revision(content.as_bytes());
         Ok(Document {
             vault_id: id.into(),
             path: path.into(),
@@ -397,6 +438,7 @@ impl Core {
     }
     pub fn journal(&self, id: &str, path: &str, content: &str) -> Result<()> {
         self.note_path(id, path)?;
+        validate_content(content)?;
         self.recovery(id, path, content.as_bytes())?;
         Ok(())
     }
@@ -408,17 +450,8 @@ impl Core {
         request: Option<&str>,
     ) -> Result<Document> {
         validate_content(content)?;
-        let relative = path.map(str::to_owned).unwrap_or_else(|| {
-            if let Some(request) = request {
-                format!("Note-{}.md", &revision(request.as_bytes())[..24])
-            } else {
-                format!(
-                    "Note-{}-{}.md",
-                    timestamp(),
-                    &uuid::Uuid::new_v4().to_string()[..8]
-                )
-            }
-        });
+        // Serialize automatic naming across app/MCP processes. Never overwrite a collision.
+        let _names = self.lock(&format!("new-name:{id}"))?;
         let fingerprint = revision(format!("create:{id}:{path:?}:{content}").as_bytes());
         let _req = self.lock(&format!(
             "request:{}",
@@ -427,6 +460,23 @@ impl Core {
         if let Some(d) = self.receipt(request, &fingerprint)? {
             return Ok(d);
         }
+        let relative = if let Some(path) = path {
+            path.to_owned()
+        } else {
+            let stem = note_name(content);
+            let mut candidate = format!("{stem}.md");
+            let mut suffix = 2u64;
+            while self.resolve(id, &candidate)?.exists() {
+                let tail = format!("_{suffix}");
+                let prefix: String = stem
+                    .chars()
+                    .take(20usize.saturating_sub(tail.len()))
+                    .collect();
+                candidate = format!("{prefix}{tail}.md");
+                suffix += 1;
+            }
+            candidate
+        };
         let p = self.note_path(id, &relative)?;
         let _lock = self.lock(&p.to_string_lossy())?;
         if p.exists() {
@@ -671,11 +721,42 @@ impl Core {
                 color: c.settings.color,
                 font: c.settings.font,
                 font_size: c.settings.font_size,
-                mode: c.settings.mode,
+                mode: if is_markdown(path) {
+                    c.settings.mode
+                } else {
+                    "edit".into()
+                },
                 width: c.settings.width,
                 height: c.settings.height,
                 ..NoteStyle::default()
             }))
+    }
+    pub fn pinned(&self) -> Result<Vec<NoteRef>> {
+        let c = self.config()?;
+        let mut notes = Vec::new();
+        for v in &c.vaults {
+            let prefix = format!("{}/", v.id);
+            for (key, style) in &c.styles {
+                if let Some(path) = key.strip_prefix(&prefix) {
+                    if style.pinned
+                        && self
+                            .resolve(&v.id, path)
+                            .map(|p| p.is_file())
+                            .unwrap_or(false)
+                    {
+                        notes.push((
+                            style.pinned_at,
+                            NoteRef {
+                                vault_id: v.id.clone(),
+                                path: path.into(),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        notes.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.path.cmp(&b.1.path)));
+        Ok(notes.into_iter().take(10).map(|(_, n)| n).collect())
     }
     pub fn set_style(&self, id: &str, path: &str, style: NoteStyle) -> Result<()> {
         self.note_path(id, path)?;
@@ -771,8 +852,13 @@ fn sync_parent(_path: &Path) -> Result<()> {
 }
 
 fn validate_content(content: &str) -> Result<()> {
-    if content.len() > 10 * 1024 * 1024 {
-        Err(message("Note exceeds the 10 MiB editing limit"))
+    if content.len() > NOTE_LIMIT {
+        Err(message("Note exceeds the 100 KiB editing limit"))
+    } else if content
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        Err(message("Binary files cannot be edited as notes"))
     } else {
         Ok(())
     }
@@ -787,6 +873,77 @@ mod tests {
         fs::create_dir(d.path().join("vault")).unwrap();
         let v = core.register(&d.path().join("vault")).unwrap();
         (d, core, v)
+    }
+    #[test]
+    fn text_formats_are_bounded_and_binary_files_are_skipped() {
+        let (_d, c, v) = fixture();
+        for path in ["settings.json", "app.toml", "service.conf", "README"] {
+            let d = c.create(&v.id, Some(path), "hello\r\nworld", None).unwrap();
+            assert_eq!(c.read(&v.id, path).unwrap().content, d.content);
+            assert_eq!(c.style(&v.id, path).unwrap().mode, "edit");
+        }
+        fs::write(Path::new(&v.path).join("binary.dat"), [0, 1, 2]).unwrap();
+        fs::write(
+            Path::new(&v.path).join("large.txt"),
+            vec![b'x'; NOTE_LIMIT + 1],
+        )
+        .unwrap();
+        fs::write(Path::new(&v.path).join("invalid.txt"), [255]).unwrap();
+        assert_eq!(c.list(&v.id).unwrap().len(), 4);
+        assert!(c.read(&v.id, "large.txt").is_err());
+        assert!(c.create(&v.id, Some("bad.txt"), "\0", None).is_err());
+        assert!(c
+            .create(
+                &v.id,
+                Some("oversize.md"),
+                &"x".repeat(NOTE_LIMIT + 1),
+                None
+            )
+            .is_err());
+        assert!(c
+            .create(&v.id, Some("limit.txt"), &"x".repeat(NOTE_LIMIT), None)
+            .is_ok());
+    }
+    #[test]
+    fn automatic_names_are_short_safe_and_never_overwrite() {
+        let (_d, c, v) = fixture();
+        assert_eq!(
+            note_name("## Hello beautiful world today"),
+            "Hello_beautiful_worl"
+        );
+        assert_eq!(note_name("../CON"), "_CON");
+        let a = c
+            .create(&v.id, None, "## Hello world", Some("first"))
+            .unwrap();
+        let again = c
+            .create(&v.id, None, "## Hello world", Some("first"))
+            .unwrap();
+        let b = c.create(&v.id, None, "## Hello world", None).unwrap();
+        assert_eq!(a.path, "Hello_world.md");
+        assert_eq!(again.path, a.path);
+        assert_eq!(b.path, "Hello_world_2.md");
+        assert_eq!(c.list(&v.id).unwrap().len(), 2);
+    }
+    #[test]
+    fn pinned_notes_are_independent_of_open_state_and_survive_rename() {
+        let (_d, c, v) = fixture();
+        for i in 0..12 {
+            let path = format!("{i}.md");
+            c.create(&v.id, Some(&path), "note", None).unwrap();
+            let mut style = c.style(&v.id, &path).unwrap();
+            style.pinned = true;
+            style.pinned_at = i;
+            c.set_style(&v.id, &path, style).unwrap();
+        }
+        c.create(&v.id, Some("open.md"), "open", None).unwrap();
+        c.opened(&v.id, "open.md", true).unwrap();
+        let pinned = c.pinned().unwrap();
+        assert_eq!(pinned.len(), 10);
+        assert_eq!(pinned[0].path, "11.md");
+        let d = c.read(&v.id, "11.md").unwrap();
+        c.rename(&v.id, &d.path, "renamed.md", &d.revision).unwrap();
+        assert_eq!(c.pinned().unwrap()[0].path, "renamed.md");
+        assert_eq!(Settings::default().mode, "view");
     }
     #[test]
     fn exact_round_trip_and_stale_save() {
