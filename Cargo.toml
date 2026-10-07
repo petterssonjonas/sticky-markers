@@ -1,0 +1,16 @@
+[workspace]
+members = ["crates/sticky-core", "crates/sticky-mcp", "src-tauri"]
+default-members = ["crates/sticky-core", "crates/sticky-mcp"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+lto = "thin"
+strip = true

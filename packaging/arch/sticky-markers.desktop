@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=Sticky Markers
+Comment=Markdown sticky notes
+Exec=sticky-markers
+Icon=sticky-markers
+Terminal=false
+Categories=Office;
+StartupWMClass=Sticky-markers
+X-StickyMarkers-Owned=true
+Actions=Main;New;
+
+[Desktop Action Main]
+Name=Open Main Window
+Exec=sticky-markers --main
+
+[Desktop Action New]
+Name=New Note
+Exec=sticky-markers

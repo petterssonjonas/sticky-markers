@@ -1,0 +1,26 @@
+# Generated with the immutable release source checksum.
+pkgname=sticky-markers
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Markdown sticky notes, one floating window per note'
+arch=('x86_64' 'aarch64')
+url='https://github.com/petterssonjonas/sticky-markers'
+license=('GPL-3.0-only')
+depends=('gtk3' 'webkit2gtk-4.1' 'libayatana-appindicator' 'dbus')
+makedepends=('rustup' 'nodejs' 'npm' 'pkgconf')
+source=("${pkgname}-${pkgver}-source.tar.gz::https://github.com/petterssonjonas/sticky-markers/releases/download/v${pkgver}/${pkgname}-${pkgver}-source.tar.gz")
+sha256sums=('@SOURCE_SHA256@')
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  npm ci
+  node scripts/prepare-mcp.mjs
+  npm run tauri -- build --no-bundle --config src-tauri/tauri.package.conf.json
+}
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  install -Dm755 target/release/sticky-markers "${pkgdir}/usr/bin/sticky-markers"
+  install -Dm755 target/release/sticky-markers-mcp "${pkgdir}/usr/bin/sticky-markers-mcp"
+  install -Dm644 packaging/arch/sticky-markers.desktop "${pkgdir}/usr/share/applications/Sticky Markers.desktop"
+  install -Dm644 src-tauri/icons/icon.png "${pkgdir}/usr/share/icons/hicolor/128x128/apps/sticky-markers.png"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

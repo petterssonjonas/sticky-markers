@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sticky Markers",
+  "version": "0.1.0",
+  "identifier": "dev.stickymarkers.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: https:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Markdown notes, one little window at a time.",
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux.desktop.hbs"
+      },
+      "rpm": {
+        "desktopTemplate": "linux.desktop.hbs"
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg5OUIxQzk5OTAxRDlFQzgKUldUSW5oMlFtUnliaVdtdHNpYldxazEyRlZxSFdBTFhka1hWZmUxOXpqTzgwOFdnL2RySEZXVGMK",
+      "endpoints": [
+        "https://github.com/petterssonjonas/sticky-markers/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

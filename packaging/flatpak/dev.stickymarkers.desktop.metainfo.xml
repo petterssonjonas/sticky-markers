@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.stickymarkers.desktop</id>
+  <name>Sticky Markers</name>
+  <summary>Markdown sticky notes in floating desktop windows</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <description><p>Keep your notes as ordinary Markdown files in folders or existing Obsidian vaults. Open each note in a colored floating window, render Markdown and Mermaid, and connect a local MCP harness.</p></description>
+  <launchable type="desktop-id">dev.stickymarkers.desktop.desktop</launchable>
+  <url type="homepage">https://github.com/petterssonjonas/sticky-markers</url>
+  <content_rating type="oars-1.1"/>
+</component>
