@@ -1,6 +1,6 @@
 import { createRoot, type Root } from "react-dom/client";
-import { StateField, StateEffect, type EditorState, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
+import { StateField, StateEffect, EditorSelection, Prec, type EditorState, type Extension } from "@codemirror/state";
+import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -33,7 +33,7 @@ class Block extends WidgetType {
 function visibleBlocks(tree: ReturnType<typeof parser.parse>, selection: { from: number; to: number }, focused: boolean) {
   return tree.children.filter((node) => {
     const start = node.position?.start.offset, end = node.position?.end.offset;
-    return start !== undefined && end !== undefined && (!focused || selection.to < start || selection.from > end);
+    return start !== undefined && end !== undefined && (!focused || (selection.to < start || selection.from > end));
   });
 }
 export function previewRanges(source: string, selection: { from: number; to: number }, focused: boolean) { return visibleBlocks(parser.parse(source), selection, focused); }
@@ -52,7 +52,9 @@ export function livePreview(options: PreviewOptions): Extension {
     create(state) { const tree = parser.parse(state.doc.toString()); return { decorations: decorate(state, true, tree), focused: true, tree }; },
     update(value, transaction) {
       let focused = value.focused;
-      for (const effect of transaction.effects) if (effect.is(focusEffect)) focused = effect.value;
+      for (const effect of transaction.effects) {
+        if (effect.is(focusEffect)) focused = effect.value;
+      }
       if (transaction.docChanged || transaction.selection || focused !== value.focused) {
         const tree = transaction.docChanged ? parser.parse(transaction.state.doc.toString()) : value.tree;
         return { decorations: decorate(transaction.state, focused, tree), focused, tree };
@@ -61,5 +63,34 @@ export function livePreview(options: PreviewOptions): Extension {
     },
     provide: (f) => EditorView.decorations.from(f, (value) => value.decorations),
   });
-  return [field, EditorView.focusChangeEffect.of((_state, focused) => focusEffect.of(focused))];
+  let preferredColumn: number | null = null;
+  let previousHead = -1;
+  let previousDoc: EditorState["doc"] | null = null;
+  const vertical = (forward: boolean, extend: boolean) => (view: EditorView) => {
+    const { state } = view;
+    const selection = state.selection.main;
+    if (!extend && !selection.empty) return false;
+    const node = state.field(field).tree.children.find((n) => selection.head >= n.position!.start.offset! && selection.head <= n.position!.end.offset!);
+    const line = state.doc.lineAt(selection.head);
+    const predicted = view.moveVertically(selection, forward).head;
+    const nearby = Math.abs(state.doc.lineAt(predicted).number - line.number) <= 1;
+    // Preserve normal visual movement, including wrapped lines, inside the
+    // active source paragraph. Across replaced blocks, move by source row.
+    if (node && nearby && (forward ? predicted > selection.head : predicted < selection.head) && predicted >= node.position!.start.offset! && predicted <= node.position!.end.offset!) {
+      preferredColumn = null; previousHead = -1;
+      return false;
+    }
+    const number = line.number + (forward ? 1 : -1);
+    if (number < 1 || number > state.doc.lines) return false;
+    if (previousHead !== selection.head || previousDoc !== state.doc || preferredColumn === null) preferredColumn = selection.head - line.from;
+    const target = state.doc.line(number);
+    const head = target.from + Math.min(preferredColumn, target.length);
+    previousHead = head; previousDoc = state.doc;
+    view.dispatch({ selection: extend ? EditorSelection.range(selection.anchor, head) : EditorSelection.cursor(head), scrollIntoView: true, userEvent: "select.keyboard" });
+    return true;
+  };
+  return [field, Prec.highest(keymap.of([
+    { key: "ArrowUp", run: vertical(false, false), shift: vertical(false, true) },
+    { key: "ArrowDown", run: vertical(true, false), shift: vertical(true, true) },
+  ])), EditorView.focusChangeEffect.of((_state, focused) => focusEffect.of(focused))];
 }

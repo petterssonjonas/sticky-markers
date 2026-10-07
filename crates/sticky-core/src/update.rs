@@ -1,11 +1,10 @@
-//! Verification and atomic activation for user-managed Linux updates.
-//! Notes and package-manager-owned binaries are never changed here.
-use crate::{atomic_write, message, Core, Result};
+//! Read-only update checks and verification of published release artifacts.
+use crate::{message, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use minisign_verify::{PublicKey, Signature};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::io::Read;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Artifact {
@@ -44,68 +43,64 @@ pub fn newer(remote: &str, current: &str) -> Result<bool> {
     Ok(Version::parse(remote).map_err(|e| message(e.to_string()))?
         > Version::parse(current).map_err(|e| message(e.to_string()))?)
 }
-fn image_path(core: &Core, version: &str) -> Result<PathBuf> {
-    let v = Version::parse(version).map_err(|e| message(e.to_string()))?;
-    if v.to_string() != version {
-        return Err(message("Noncanonical update version"));
-    }
-    Ok(core
-        .data
-        .join("updates/installed")
-        .join(version)
-        .join("StickyMarkers.AppImage"))
+pub const RELEASES_URL: &str = "https://github.com/petterssonjonas/sticky-markers/releases";
+const FEED_URL: &str =
+    "https://github.com/petterssonjonas/sticky-markers/releases/latest/download/latest.json";
+const FEED_LIMIT: u64 = 1024 * 1024;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Release {
+    pub version: String,
+    pub notes: Option<String>,
+    pub release_url: String,
 }
-pub fn active_image(core: &Core, current: &str, public_key: &str) -> Result<Option<PathBuf>> {
-    let metadata = core.data.join("updates/active.json");
-    let artifact: Artifact = match fs::read(&metadata) {
-        Ok(bytes) => serde_json::from_slice(&bytes)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    if !newer(&artifact.version, current)? {
+#[derive(Deserialize)]
+struct Feed {
+    version: String,
+    notes: Option<String>,
+}
+/// Feed metadata only: never downloads, stages, or executes an application.
+pub fn parse_feed(bytes: &[u8], current: &str) -> Result<Option<Release>> {
+    let feed: Feed = serde_json::from_slice(bytes)?;
+    let version = Version::parse(&feed.version).map_err(|e| message(e.to_string()))?;
+    if version.to_string() != feed.version {
+        return Err(message("Noncanonical release version"));
+    }
+    if !newer(&feed.version, current)? {
         return Ok(None);
     }
-    let path = image_path(core, &artifact.version)?;
-    let bytes = fs::read(&path)?;
-    verify(&bytes, &artifact, public_key)?;
-    validate_image(&bytes)?;
-    Ok(Some(path))
+    Ok(Some(Release {
+        release_url: format!("{RELEASES_URL}/tag/v{}", feed.version),
+        version: feed.version,
+        notes: feed.notes,
+    }))
 }
-fn validate_image(bytes: &[u8]) -> Result<()> {
-    if !bytes.starts_with(b"\x7fELF") || bytes.get(8..11) != Some(b"AI\x02") {
-        return Err(message(
-            "The Linux update is not an AppImage type 2 executable",
-        ));
+fn read_feed(url: &str, current: &str) -> Result<Option<Option<Release>>> {
+    let response = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(concat!("sticky-markers/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| message(e.to_string()))?
+        .get(url)
+        .send()
+        .map_err(|e| message(e.to_string()))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
     }
-    Ok(())
+    let response = response
+        .error_for_status()
+        .map_err(|e| message(e.to_string()))?;
+    let mut bytes = Vec::new();
+    response.take(FEED_LIMIT + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > FEED_LIMIT {
+        return Err(message("Release metadata exceeds the size limit"));
+    }
+    Ok(Some(parse_feed(&bytes, current)?))
 }
-pub fn activate_image(
-    core: &Core,
-    bytes: &[u8],
-    artifact: &Artifact,
-    public_key: &str,
-    current: &str,
-) -> Result<PathBuf> {
-    verify(bytes, artifact, public_key)?;
-    validate_image(bytes)?;
-    if !newer(&artifact.version, current)? {
-        return Err(message("Refusing an application downgrade"));
-    }
-    let _lock = core.lock("application-updater")?;
-    let path = image_path(core, &artifact.version)?;
-    atomic_write(&path, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-    }
-    // Activate only after the new executable is fully written and verified.
-    // Keep previous version directories for rollback; no destructive cleanup during restart.
-    atomic_write(
-        &core.data.join("updates/active.json"),
-        &serde_json::to_vec(artifact)?,
-    )?;
-    Ok(path)
+/// None means no published feed yet; Some(None) means already up to date.
+pub fn check(current: &str) -> Result<Option<Option<Release>>> {
+    read_feed(FEED_URL, current)
 }
 
 #[cfg(test)]
@@ -137,25 +132,39 @@ mod tests {
         assert!(verify(bytes, &artifact, &key).is_err());
     }
     #[test]
-    fn failed_update_leaves_active_install_and_notes_untouched() {
-        let dir = tempfile::tempdir().unwrap();
-        let core = Core::new(dir.path().join("data")).unwrap();
-        atomic_write(
-            &core.data.join("updates/active.json"),
-            b"previous activation",
-        )
-        .unwrap();
-        fs::create_dir(dir.path().join("vault")).unwrap();
-        let v = core.register(&dir.path().join("vault")).unwrap();
-        core.create(&v.id, Some("n.md"), "keep this note", None)
-            .unwrap();
-        let (bytes, artifact, key) = fixture();
-        assert!(activate_image(&core, bytes, &artifact, &key, "0.0.1").is_err()); // signed text is not an executable
-        assert_eq!(
-            fs::read(core.data.join("updates/active.json")).unwrap(),
-            b"previous activation"
-        );
-        assert_eq!(core.read(&v.id, "n.md").unwrap().content, "keep this note");
+    fn checks_offer_release_packages_and_ignore_installation_targets() {
+        let bytes = br#"{"version":"0.2.0","notes":"New release","platforms":{"linux-x86_64":{"url":"https://untrusted.example/payload"}}}"#;
+        let release = parse_feed(bytes, "0.1.0").unwrap().unwrap();
+        assert_eq!(release.release_url, format!("{RELEASES_URL}/tag/v0.2.0"));
+        assert_eq!(release.notes.as_deref(), Some("New release"));
+        assert!(parse_feed(bytes, "0.2.0").unwrap().is_none());
+        assert!(parse_feed(bytes, "1.0.0").unwrap().is_none());
+        assert!(parse_feed(br#"{"version":"../../payload"}"#, "0.1.0").is_err());
+    }
+    #[test]
+    fn checks_handle_unpublished_and_published_feeds() {
+        use std::io::{Read, Write};
+        for (code, body) in [(404, "missing"), (200, "{\"version\":\"0.2.0\"}")] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/latest.json", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                stream.read(&mut request).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 {code} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            });
+            let result = read_feed(&url, "0.1.0").unwrap();
+            assert_eq!(result.is_some(), code == 200);
+            if code == 200 {
+                assert_eq!(result.unwrap().unwrap().version, "0.2.0");
+            }
+            server.join().unwrap();
+        }
     }
     #[test]
     fn versions_are_compared_numerically_and_downgrades_rejected() {

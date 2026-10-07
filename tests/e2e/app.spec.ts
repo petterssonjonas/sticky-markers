@@ -90,11 +90,21 @@ test("Markdown rendering is safe and editing preserves CRLF frontmatter", async 
   expect(saved.replaceAll("\r\n", "").includes("\n")).toBe(false);
   expect(saved.endsWith("\r\nKept.")).toBe(true);
 });
-test("updater settings explain desktop installation and automatic checks", async ({ page }) => {
+test("update checks offer package links without installation controls", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Updates", exact: true }).click();
   await expect(page.getByText("Installed version 0.1.0")).toBeVisible();
+  await expect(page.getByText("The app does not download or install updates.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Restart and install" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Download update" })).toHaveCount(0);
+  await page.context().route("https://github.com/petterssonjonas/sticky-markers/releases", (route) => route.fulfill({ contentType: "text/html", body: "<title>Release packages</title>" }));
+  const popup = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Open release packages" }).click();
+  const releasePage = await popup;
+  await releasePage.waitForLoadState();
+  expect(releasePage.url()).toContain("github.com/petterssonjonas/sticky-markers/releases");
+  await releasePage.close();
   await page.getByRole("button", { name: "Check for updates", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("desktop app");
   await page.getByRole("checkbox", { name: /Automatic update checks/ }).uncheck();
@@ -183,4 +193,93 @@ test("arbitrary text notes open as source and rendered card links cannot overflo
   await expect(page.locator(".markdown-body")).toHaveCount(0);
   await page.getByRole("button", { name: "Note menu", exact: true }).click();
   await expect(page.getByRole("button", { name: "Edit", exact: true })).toHaveClass(/active/);
+});
+
+async function editorFixture(page: import("@playwright/test").Page, content: string, mode: "edit" | "view") {
+  await page.goto("/");
+  await page.getByRole("button", { name: "New note", exact: false }).first().click();
+  await page.getByRole("button", { name: "Close note to collection" }).click();
+  await page.evaluate(({ content, mode }) => {
+    const key = "sticky-markers-browser-demo-v1", d = JSON.parse(localStorage.getItem(key)!);
+    d.files = { "Fixture.md": content };
+    d.config.styles = { "demo/Fixture.md": { ...d.config.settings, open: false, pinned: false, pinnedAt: 0, x: null, y: null, mode } };
+    localStorage.setItem(key, JSON.stringify(d));
+  }, { content, mode });
+  await page.goto("/?vault=demo&note=Fixture.md");
+  await expect(page.locator(".cm-content")).toBeVisible();
+}
+
+test("Edit mode shows literal Markdown with uniform text styling after formatting", async ({ page }) => {
+  await editorFixture(page, "## Raw heading\n\nplain text", "edit");
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.getByRole("button", { name: "bullets", exact: true }).click();
+  await expect(page.locator(".cm-content")).toContainText("- plain text");
+  await page.getByRole("button", { name: "bold", exact: true }).click();
+  await page.keyboard.type("bold");
+  await page.getByRole("button", { name: "italic", exact: true }).click();
+  await page.keyboard.type("italic");
+  await expect(page.locator(".cm-content")).toContainText("**bold*italic***");
+  await expect(page.locator(".live-preview-block")).toHaveCount(0);
+  await expect(page.locator(".cm-content span[style*='font-weight'], .cm-content span[style*='font-style']")).toHaveCount(0);
+  const emphasis = await page.locator(".cm-content span").evaluateAll((spans) => spans.some((span) => {
+    const style = getComputedStyle(span);
+    return Number(style.fontWeight) > 400 || style.fontStyle === "italic";
+  }));
+  expect(emphasis).toBe(false);
+});
+
+test("Arrow Up reveals the nearby rendered paragraph instead of jumping to the start", async ({ page }) => {
+  const source = "# Top\n\nFirst **rendered** paragraph\n\n## Second rendered paragraph\n\nLast editable line";
+  await editorFixture(page, source, "view");
+  await page.locator(".live-preview-block").filter({ hasText: "Last editable line" }).click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.type("[UP]");
+  await page.getByRole("button", { name: "Close note to collection" }).click();
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("sticky-markers-browser-demo-v1")!).files["Fixture.md"] as string);
+  expect(saved.indexOf("[UP]")).toBeGreaterThan(saved.indexOf("## Second"));
+  expect(saved.replace("[UP]", "")).toBe(source);
+});
+
+test("Edit-mode code tools insert literal fences with the caret inside", async ({ page }) => {
+  await editorFixture(page, "", "edit");
+  await page.getByRole("button", { name: "Insert code", exact: true }).click();
+  await page.getByRole("button", { name: "Code block", exact: true }).click();
+  await page.keyboard.type("const answer = 42;");
+  await expect(page.locator(".cm-content")).toContainText("const answer = 42;");
+  await expect(page.locator(".live-preview-block")).toHaveCount(0);
+  await page.getByRole("button", { name: "Close note to collection" }).click();
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("sticky-markers-browser-demo-v1")!).files["Fixture.md"] as string);
+  expect(saved).toBe("```\nconst answer = 42;\n```");
+});
+
+test("rendered lists use compact line spacing", async ({ page }) => {
+  await editorFixture(page, "# Heading\n\n- one\n- two\n- three\n\nNormal paragraph", "view");
+  await expect(page.locator(".live-preview-block li")).toHaveCount(3);
+  const ratios = await page.locator(".live-preview-block").evaluateAll((blocks) => {
+    const ratio = (element: Element) => { const style = getComputedStyle(element); return parseFloat(style.lineHeight) / parseFloat(style.fontSize); };
+    const list = blocks.flatMap((block) => Array.from(block.querySelectorAll("li"))).map(ratio);
+    const paragraph = blocks.flatMap((block) => Array.from(block.querySelectorAll("p"))).find((p) => p.textContent === "Normal paragraph")!;
+    return { list, paragraph: ratio(paragraph) };
+  });
+  expect(ratios.list).toEqual([1.25, 1.25, 1.25]);
+  expect(ratios.paragraph).toBe(1);
+});
+
+test("Arrow Down and Shift-arrow selection stay near adjacent rendered rows", async ({ page }) => {
+  const source = "First editable row\n\nSecond **rendered** row\n\n## Third row\n\nLast row";
+  await editorFixture(page, source, "view");
+  await page.keyboard.press("ControlOrMeta+Home");
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Shift+ArrowDown");
+  await page.keyboard.press("Shift+ArrowDown");
+  await page.keyboard.type("[REPLACED]");
+  await page.getByRole("button", { name: "Close note to collection" }).click();
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("sticky-markers-browser-demo-v1")!).files["Fixture.md"] as string);
+  expect(saved.startsWith("First editable row\n\n")).toBe(true);
+  expect(saved.endsWith("Last row")).toBe(true);
+  expect(saved).toContain("[REPLACED]");
 });

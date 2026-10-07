@@ -319,10 +319,6 @@ fn request_quit(app: &AppHandle) {
                 .unwrap_or(true)
             {
                 *app.state::<Shared>().quitting.lock().unwrap() = None;
-                updates::cancel_install(
-                    &app,
-                    "Update cancelled because a note could not be saved.",
-                );
                 let _ = app.emit("quit-cancelled", ());
                 return;
             }
@@ -354,34 +350,16 @@ fn request_quit(app: &AppHandle) {
                     let quit=app.dialog().message(format!("Notes are saved locally, but GitHub sync is pending:\n{}\n\nQuit and sync next time?",errors.join("\n"))).title("Sync pending").buttons(MessageDialogButtons::YesNo).blocking_show();
                     if !quit {
                         *app.state::<Shared>().quitting.lock().unwrap() = None;
-                        updates::cancel_install(
-                            &app,
-                            "Update postponed. Your notes and downloaded update are kept.",
-                        );
                         let _ = app.emit("quit-cancelled", ());
                         return;
                     }
                 }
-                if updates::install_requested(&app) {
-                    let core = app.state::<Shared>().core.clone();
-                    if let Err(error) = updates::apply(&app, &core) {
-                        *app.state::<Shared>().quitting.lock().unwrap() = None;
-                        updates::cancel_install(&app, &error);
-                        let _ = app.emit("quit-cancelled", ());
-                        let _ = show_main_page(&app, true);
-                    }
-                } else {
-                    app.exit(0);
-                }
+                app.exit(0);
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         *app.state::<Shared>().quitting.lock().unwrap() = None;
-        updates::cancel_install(
-            &app,
-            "Could not confirm all notes were saved. Update was cancelled.",
-        );
         let _ = app.emit("quit-cancelled", ());
         let _ = app.emit(
             "quit-error",
@@ -801,9 +779,6 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
 fn main() {
     let core =
         Core::new(Core::default_location()).expect("Cannot open Sticky Markers app-data directory");
-    if updates::bootstrap(&core) {
-        return;
-    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             let core = app.state::<Shared>().core.clone();
@@ -813,7 +788,6 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::State::default())
         .manage(Shared {
             core: core.clone(),
@@ -824,9 +798,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             dispatch,
             updates::update_status,
-            updates::update_check,
-            updates::update_download,
-            updates::update_restart
+            updates::update_check
         ])
         .setup(move |app| {
             let menu = Menu::new(app)?;

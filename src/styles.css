@@ -710,7 +710,7 @@ hr {
 }
 .markdown-body {
   padding: 16px 24px 35px;
-  line-height: 1.7;
+  line-height: 1;
   overflow-wrap: anywhere;
 }
 .markdown-body > :first-child {
@@ -763,7 +763,12 @@ hr {
 .markdown-body ul,
 .markdown-body ol {
   padding-left: 22px;
+  line-height: 1.25;
+  margin-block: .5em;
 }
+.markdown-body li { margin-block: 0; }
+.markdown-body li > p { margin-block: .25em; }
+.markdown-body li > :is(ul, ol) { margin-block: 0; }
 .markdown-body input {
   accent-color: var(--ink);
 }
@@ -1296,8 +1301,6 @@ hr {
 .update-panel .secondary { justify-self: start; }
 .update-release { border-top: 1px solid var(--line); padding-top: 16px; }
 .release-notes { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; font-family: inherit; font-size: 13px; }
-.update-progress { display: flex; gap: 12px; align-items: center; }
-.update-progress progress { flex: 1; accent-color: #4b6950; }
 .update-notice { position: fixed; bottom: 30px; left: 12px; right: 12px; z-index: 50; display: flex; gap: 8px; align-items: center; padding: 10px 12px; background: var(--panel); color: var(--text, #343d33); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 3px 15px #0002; font-size: 12px; }
 .update-notice span { flex: 1; }
 .update-notice button { font-size: 12px; }

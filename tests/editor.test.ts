@@ -8,11 +8,11 @@ describe("source formatting", () => {
       "one two three".slice(0, e.from) + e.insert + "one two three".slice(e.to),
     ).toBe("one **two** three");
   });
-  it("places an empty selection inside markers and exits on toggle", () => {
+  it("places an empty selection inside literal markers", () => {
     const e = formatEdit("", 0, 0, "bold");
     expect(e.insert).toBe("****");
     expect(e.anchor).toBe(2);
-    expect(formatEdit("**hello**", 7, 7, "bold").anchor).toBe(9);
+    expect(formatEdit("text", 4, 4, "italic")).toMatchObject({insert: "**", anchor: 5});
   });
   it("inserts underline that survives Markdown export", () => {
     expect(formatEdit("word", 0, 4, "underline").insert).toBe("<u>word</u>");
@@ -35,5 +35,18 @@ describe("heading insertion", () => {
     const text = "before\n## Heading\nafter";
     const e = formatEdit(text, 10, 10, "heading4");
     expect(text.slice(0, e.from) + e.insert + text.slice(e.to)).toBe("before\n#### Heading\nafter");
+  });
+});
+
+describe("literal code insertion", () => {
+  it("places the cursor inside inline and fenced code", () => {
+    expect(formatEdit("", 0, 0, "code")).toMatchObject({ insert: "``", anchor: 1 });
+    expect(formatEdit("", 0, 0, "codeblock")).toMatchObject({ insert: "```\n\n```", anchor: 4 });
+    expect(formatEdit("word", 0, 4, "italic").insert).toBe("*word*");
+  });
+  it("keeps selected code intact and uses a safe fence", () => {
+    const code = "one\n```embedded\ntwo";
+    const edit = formatEdit(code, 0, code.length, "codeblock");
+    expect(edit.insert).toBe("````\n" + code + "\n````");
   });
 });

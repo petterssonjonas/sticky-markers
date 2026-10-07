@@ -16,10 +16,6 @@ import {
 } from "@codemirror/commands";
 import { livePreview, type PreviewOptions } from "./live-preview";
 import { markdown, markdownKeymap } from "@codemirror/lang-markdown";
-import {
-  syntaxHighlighting,
-  defaultHighlightStyle,
-} from "@codemirror/language";
 export interface EditorHandle {
   format: (kind: string) => void;
   focus: () => void;
@@ -33,7 +29,8 @@ export function formatEdit(
 ) {
   const tokens: Record<string, [string, string]> = {
     bold: ["**", "**"],
-    italic: ["_", "_"],
+    italic: ["*", "*"],
+    code: ["`", "`"],
     underline: ["<u>", "</u>"],
     strike: ["~~", "~~"],
   };
@@ -53,14 +50,20 @@ export function formatEdit(
       .join("\n");
     return { from: start, to, insert, anchor: start + insert.length };
   }
+  if (kind === "codeblock") {
+    const selected = text.slice(from, to);
+    // A longer fence safely wraps selections that already contain backticks.
+    const longest = Math.max(0, ...Array.from(selected.matchAll(/`+/g), (m) => m[0].length));
+    const fence = "`".repeat(Math.max(3, longest + 1));
+    const left = `${from > 0 && text[from - 1] !== "\n" ? "\n" : ""}${fence}\n`;
+    const right = `\n${fence}${to < text.length && text[to] !== "\n" ? "\n" : ""}`;
+    return { from, to, insert: left + selected + right, anchor: from + left.length + selected.length };
+  }
   if (kind === "table") {
     const insert = "\n\n| Heading | Heading |\n| --- | --- |\n|  |  |\n";
     return { from, to, insert, anchor: from + insert.indexOf("Heading") };
   }
   const [left, right] = tokens[kind] ?? ["", ""];
-  if (from === to && text.slice(to, to + right.length) === right) {
-    return { from, to, insert: "", anchor: to + right.length };
-  }
   const selected = text.slice(from, to);
   if (
     selected.startsWith(left) &&
@@ -135,7 +138,6 @@ export const MarkdownEditor = forwardRef<
           history(),
           editable.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
           syntax.current.of(plain ? [] : markdown()),
-          syntaxHighlighting(defaultHighlightStyle),
           EditorView.lineWrapping,
           keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
           EditorView.updateListener.of((u) => {

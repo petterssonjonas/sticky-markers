@@ -610,6 +610,7 @@ function NoteWindow({
   );
   const [menu, setMenu] = useState(false);
   const [headings, setHeadings] = useState(false);
+  const [codeMenu, setCodeMenu] = useState(false);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [status, setStatus] = useState(path.startsWith("draft-") ? "Empty draft" : "Saved locally");
   const [error, setError] = useState("");
@@ -936,8 +937,11 @@ function NoteWindow({
               </Button>
             );
           })}
-          <div className="heading-control"><Button label="Insert heading" onClick={() => setHeadings(!headings)}><Heading size={15}/><ChevronDown size={10}/></Button>
+          <div className="heading-control"><Button label="Insert heading" onClick={() => { setHeadings(!headings); setCodeMenu(false); }}><Heading size={15}/><ChevronDown size={10}/></Button>
             {headings && <div className="heading-menu">{[1,2,3,4,5,6].map((n) => <button key={n} onClick={() => { format(`heading${n}`); setHeadings(false); }}>Heading {n} <span>{"#".repeat(n)}</span></button>)}</div>}
+          </div>
+          <div className="heading-control"><Button label="Insert code" onClick={() => { setCodeMenu(!codeMenu); setHeadings(false); }}><Code2 size={15}/><ChevronDown size={10}/></Button>
+            {codeMenu && <div className="heading-menu">{[["code", "Inline code"], ["codeblock", "Code block"]].map(([kind, label]) => <button key={kind} onClick={() => { format(kind); setCodeMenu(false); }}>{label}</button>)}</div>}
           </div>
         </div>
         <Button label="Note menu" onClick={() => setMenu(!menu)}>

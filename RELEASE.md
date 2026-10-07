@@ -48,31 +48,29 @@ The workflow uploads assets to the release that you published; it never runs `gh
 
 The Linux release runner uses Ubuntu 22.04 for a broader glibc baseline. RPM/DEB still require the distribution's GTK 3, WebKitGTK 4.1, AppIndicator, and D-Bus libraries. The Flatpak stages the app, MCP, WebKit subprocesses, and dependent libraries into the GNOME 49 runtime, relocating WebKit's compiled subprocess path to `/app/lib`; its dependency and native lifecycle checks run before publication. The complete platform/Flatpak workflow has not been run yet; local checks cover Linux native packages and Windows cross-compilation.
 
-## In-app updates
+## In-app update checks
 
-**Settings → Updates** provides manual checks, release notes, download progress, and **Restart and install**. Checks also run five seconds after launch and every six hours while enabled. An available update appears in an in-app notice and the tray menu; closed notes do not quit the scheduler. These notices do not download or install without the user's action.
+**Settings → Updates** provides manual checks, release notes, and **Open release packages**. Checks also run five seconds after launch and every six hours while enabled. An available release appears in an in-app notice and the tray menu. Every installation format uses this check-only flow: the app does not download installers, install updates, restart to update, or redirect a system installation to a user AppImage.
 
-The endpoint is:
+Checks read version and release-note metadata from:
 
 ```
 https://github.com/petterssonjonas/sticky-markers/releases/latest/download/latest.json
 ```
 
-The app accepts versioned download URLs from this repository only. Downloads are verified against the embedded public key and the signed version. A signature mismatch, a downgrade, or a failed note-save acknowledgement cancels installation. Downloading runs separately from local note editing. Before installation, every open note must acknowledge that its current text was saved. Normal sync-on-exit settings also apply.
+The package link opens this repository's release page for that version. Install the same package format you originally used, or use your existing package manager. Release artifact signing and verification remain part of publishing; they are independent of these read-only checks.
 
 ### Linux RPM, DEB, Arch, and AppImage
 
-In-app updates install a verified AppImage under the user's app-data directory, regardless of the original Linux installation format. Version directories and the active pointer are written atomically; the original package and previous images remain available. Subsequent launches through the original launcher redirect to a newer verified user-managed image. If the installed system package is newer, the app uses it instead. Notes, vault registration, settings, and recovery remain in the same data directory.
+RPM, DEB, and Arch packages stay managed by their package manager. AppImage users can manually replace their AppImage with the new release file. No application-data executable or active-image redirect is created or used. Previously staged updater files are left untouched and ignored by this version.
 
-Updated images run with AppImage's extract-and-run mode, so FUSE is not required for this update path. They still require a compatible Linux architecture/runtime. Restart waits for the old process to exit before initializing the replacement's single-instance handler.
-
-You can alternatively update the native packages through your package manager using downloaded releases. This repository does not publish an APT/DNF/pacman package repository. For an RPM:
+Update native packages through your package manager using downloaded releases. This repository does not publish an APT/DNF/pacman package repository. For an RPM:
 
 ```sh
 sudo dnf install ./sticky-markers-VERSION-linux-x86_64.rpm
 ```
 
-On Arch, extract the `arch-pacman` release archive and run `make`, then `make install`, as your normal user. Its PKGBUILD compiles the immutable release source and validates its checksum. The generated package is installed/updated by pacman; the Makefile wraps makepkg rather than modifying system files directly. Arch supports native x86_64/aarch64 builds; portable release AppImage updates are currently published for x86_64.
+On Arch, extract the `arch-pacman` release archive and run `make`, then `make install`, as your normal user. Its PKGBUILD compiles the immutable release source and validates its checksum. The generated package is installed/updated by pacman; the Makefile wraps makepkg rather than modifying system files directly. Arch supports native x86_64/aarch64 builds; release AppImages are currently published for x86_64.
 
 ### Flatpak
 
@@ -83,13 +81,13 @@ flatpak install --user ./sticky-markers-VERSION-linux-flatpak-x86_64.flatpak
 flatpak run dev.stickymarkers.desktop
 ```
 
-In-app updates download the signed Flatpak bundle, verify it, and use `flatpak-spawn --host` to install/update the user Flatpak before restarting it. The manifest grants that host integration, network, Secret Service, tray integration, and home-folder access for vaults. It is not a Flathub submission or a public Flatpak update repository. Flatpak keeps its own sandbox app-data directory; switching between Flatpak and a native install does not automatically migrate settings, though both can open the same Markdown folders.
+Update a Flatpak with the new release bundle using `flatpak install --or-update`, preserving your existing user or system installation scope. The app does not invoke `flatpak-spawn` or modify the Flatpak installation. The manifest grants network, Secret Service, tray integration, and home-folder access for vaults. It is not a Flathub submission or a public Flatpak update repository. Flatpak keeps its own sandbox app-data directory; switching between Flatpak and a native install does not automatically migrate settings, though both can open the same note folders.
 
 For a host MCP harness, use `flatpak` as the command and `["run", "--user", "--command=sticky-markers-mcp", "dev.stickymarkers.desktop", "--vault", "YOUR_VAULT_ID"]` as its arguments. This runs MCP inside the same sandbox/data directory as the Flatpak desktop.
 
 ### macOS and Windows
 
-macOS replaces the installed application using the signed app archive and restarts it. A read-only DMG must first be copied to a writable installation location. Windows downloads the signed EXE installer; the Tauri updater starts the installer after notes are saved, exits, and lets the installer relaunch the app. Default installation is per user; the OS can still request permission for protected installation locations.
+Download the macOS DMG or Windows EXE from the release packages link. On macOS, replace your installed application from the DMG. On Windows, run the new installer using the existing installation location and scope. Quit Sticky Markers first so open notes are saved. The app does not run installers or restart itself to apply updates.
 
 ## Local package and validation commands
 
@@ -109,4 +107,4 @@ npm test
 npm run test:e2e
 ```
 
-The release tests check version/tag consistency, required signed targets, asset-name collisions, and checksums. Core tests verify genuine signed bytes/version binding, tampering rejection, downgrade prevention, and that a failed update leaves notes and the active installation untouched. The signing helper verifies all five updater targets before publishing.
+The release tests check version/tag consistency, required signed targets, asset-name collisions, and checksums. Core tests verify signed bytes/version binding, tampering rejection, numeric version comparisons, and read-only checks of published/unpublished release feeds. The signing helper verifies all five updater targets before publishing.
