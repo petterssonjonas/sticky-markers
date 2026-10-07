@@ -9,9 +9,9 @@
     "check": "tsc -b",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "tauri": "tauri",
-    "desktop": "tauri dev",
-    "package": "node scripts/prepare-mcp.mjs && tauri build --config src-tauri/tauri.package.conf.json",
+    "tauri": "node scripts/tauri.mjs",
+    "desktop": "npm run tauri -- dev",
+    "package": "node scripts/prepare-mcp.mjs && npm run tauri -- build --config src-tauri/tauri.package.conf.json",
     "test:rust": "cargo test -p sticky-core -p sticky-markers-mcp",
     "release:version": "node scripts/set-version.mjs",
     "preview:web": "vite --host 0.0.0.0 --port 3000"

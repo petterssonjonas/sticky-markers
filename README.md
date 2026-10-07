@@ -86,6 +86,8 @@ npm run tauri -- build --bundles deb --config src-tauri/tauri.package.conf.json
 
 Release packaging and signed in-app updates are configured in [RELEASE.md](RELEASE.md). Publishing a matching versioned GitHub release builds AppImage, RPM, DEB, Flatpak, Arch packaging, DMG, EXE, and source archives. Ordinary pushes run CI but do not create releases. The updater signing secret needs the one-time setup described there. Apple notarization and Windows Authenticode signing still require their separate credentials.
 
+Use the `npm run tauri --` wrapper for packaging: it sets a packaging umask of `022`, and the pre-bundle hook sets executable modes to `0755` and icon modes to `0644`. Linux CI and release builds inspect the RPM/DEB payloads with `python3 scripts/check-linux-packages.py` so root-owned installations remain accessible to ordinary users.
+
 ## Checks
 
 ```sh

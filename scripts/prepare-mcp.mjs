@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, copyFileSync } from "node:fs";
+import { mkdirSync, copyFileSync, chmodSync } from "node:fs";
 const debug = process.argv.includes("--debug");
 const target =
   process.env.STICKY_BUILD_TARGET ??
@@ -27,4 +27,7 @@ copyFileSync(
   `target/${process.env.STICKY_BUILD_TARGET ? target + "/" : ""}${profile}/sticky-markers-mcp${ext}`,
   `src-tauri/binaries/sticky-markers-mcp-${target}${ext}`,
 );
+if (process.platform !== "win32") {
+  chmodSync(`src-tauri/binaries/sticky-markers-mcp-${target}${ext}`, 0o755);
+}
 console.log(`Prepared ${target} MCP executable for packaging`);

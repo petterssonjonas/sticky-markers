@@ -97,6 +97,9 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           ARCH: ${{ matrix.arch }}
         run: python scripts/release.py collect --tag "$RELEASE_TAG" --platform "$PLATFORM" --arch "$ARCH"
+      - name: Verify Linux package permissions
+        if: runner.os == 'Linux'
+        run: python3 scripts/check-linux-packages.py
       - name: Native Linux installer smoke
         if: runner.os == 'Linux'
         run: xvfb-run -a dbus-run-session -- python3 scripts/native-smoke.py
