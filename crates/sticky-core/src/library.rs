@@ -318,7 +318,10 @@ mod tests {
             std::fs::create_dir(&folder).unwrap();
             let v = core.register(&folder).unwrap();
             core.create(&v.id, Some("same.md"), name, None).unwrap();
-            std::fs::File::open(folder.join("same.md"))
+            // Windows requires a writable handle to change file timestamps.
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(folder.join("same.md"))
                 .unwrap()
                 .set_times(
                     std::fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(time)),
