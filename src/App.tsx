@@ -57,7 +57,8 @@ import {
   defaultStyle,
   mainVault,
 } from "./types";
-import { palettes, colors, fonts, colorNames } from "./palettes";
+import { colors, fonts } from "./palettes";
+import { ColorSwatches, FontOptions } from "./preferences";
 import { Collection } from "./collection";
 import { UpdateNotice, UpdatePanel } from "./updates";
 import { type EditorHandle } from "./editor";
@@ -196,15 +197,18 @@ export default function App() {
             refresh={refresh}
             dark={dark}
             openSettings={setSettingsTab}
+            settingsTab={settingsTab}
+            settingsContent={
+              settingsTab ? (
+                <SettingsDialog
+                  config={config}
+                  close={() => setSettingsTab(null)}
+                  refresh={refresh}
+                  initialTab={settingsTab}
+                />
+              ) : null
+            }
           />
-          {settingsTab && (
-            <SettingsDialog
-              config={config}
-              close={() => setSettingsTab(null)}
-              refresh={refresh}
-              initialTab={settingsTab}
-            />
-          )}
         </>
       )}
     </>
@@ -227,7 +231,11 @@ function NoteWindow({
   const [document, setDocument] = useState<Document | null>(null);
   const [text, setText] = useState("");
   const [style, setStyle] = useState<NoteStyle>(
-    config.styles[`${vaultId}/${path}`] ?? defaultStyle(config.settings),
+    config.styles[`${vaultId}/${path}`] ??
+      defaultStyle(
+        config.settings,
+        config.vaults.find((v) => v.id === vaultId),
+      ),
   );
   const [menu, setMenu] = useState(false);
   const [headings, setHeadings] = useState(false);
@@ -669,23 +677,11 @@ function NoteWindow({
               <FolderOpen size={13} />
               {vault?.name}
             </div>
-            <div className="palette-name">Classic</div>
-            <div className="swatches">
-              {(dark ? palettes.classic.dark : palettes.classic.light)?.map(
-                (color, i) => (
-                  <button
-                    aria-label={`${colorNames[i % 8]} ${i < 8 ? "pastel" : "vibrant"}`}
-                    aria-pressed={style.color === i}
-                    className={style.color === i ? "chosen" : ""}
-                    style={{ background: color }}
-                    key={i}
-                    onClick={() => void updateStyle({ color: i })}
-                  >
-                    {style.color === i && <Check size={15} />}
-                  </button>
-                ),
-              )}
-            </div>
+            <ColorSwatches
+              value={style.color}
+              dark={dark}
+              onChange={(color) => void updateStyle({ color })}
+            />
             <div className="mode-switch">
               <button
                 className={noteMode === "edit" ? "active" : ""}
@@ -716,20 +712,7 @@ function NoteWindow({
                   value={style.font}
                   onChange={(e) => void updateStyle({ font: e.target.value })}
                 >
-                  <option value="sans">Sans serif</option>
-                  <option value="serif">Serif</option>
-                  <option value="mono">Monospace</option>
-                  {style.font &&
-                    !["sans", "serif", "mono", ...systemFonts].includes(
-                      style.font,
-                    ) && <option value={style.font}>{style.font}</option>}
-                  <optgroup label="System fonts">
-                    {systemFonts.map((font) => (
-                      <option value={font} key={font}>
-                        {font}
-                      </option>
-                    ))}
-                  </optgroup>
+                  <FontOptions current={style.font} system={systemFonts} />
                 </select>
               </label>
               <label>
@@ -924,7 +907,9 @@ function SettingsDialog({
   initialTab?: string;
 }) {
   const [settings, setSettings] = useState<Settings>(config.settings);
+  const dark = useDark(settings.appearance);
   const [tab, setTab] = useState(initialTab);
+  useEffect(() => setTab(initialTab), [initialTab]);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1005,542 +990,548 @@ function SettingsDialog({
   const field = (patch: Partial<Settings>) =>
     setSettings((s) => ({ ...s, ...patch }));
   return (
-    <div
-      className="modal-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) close();
-      }}
+    <section
+      className="settings-dialog settings-pane"
+      role="region"
+      aria-label="Settings"
     >
-      <section
-        className="settings-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Settings"
-      >
-        <header>
-          <div>
-            <small>MAKE IT YOURS</small>
-            <h2>A little personal.</h2>
-          </div>
-          <Button label="Close settings" onClick={close}>
-            <X size={19} />
-          </Button>
-        </header>
-        <nav className="settings-tabs">
-          {[
-            ["general", "Notes & appearance"],
-            ["vaults", "Vaults & GitHub"],
-            ["mcp", "MCP access"],
-            ["updates", "Updates"],
-          ].map(([id, label]) => (
+      <header>
+        <h2>Settings</h2>
+        <Button label="Close settings" onClick={close}>
+          <X size={19} />
+        </Button>
+      </header>
+      <nav className="settings-tabs">
+        {[
+          ["general", "Notes & appearance"],
+          ["vaults", "Vaults & GitHub"],
+          ["mcp", "MCP access"],
+          ["updates", "Updates"],
+        ].map(([id, label]) => (
+          <button
+            className={tab === id ? "active" : ""}
+            key={id}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+      <div className="settings-content">
+        {tab === "updates" && (
+          <>
+            <UpdatePanel />
+            <label className="setting-row">
+              <span>
+                <strong>Automatic update checks</strong>
+                <small>Check shortly after launch and every six hours.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.checkUpdates ?? true}
+                onChange={(e) => field({ checkUpdates: e.target.checked })}
+              />
+            </label>
             <button
-              className={tab === id ? "active" : ""}
-              key={id}
-              onClick={() => setTab(id)}
+              className="secondary"
+              disabled={busy}
+              onClick={() =>
+                void run(
+                  () => call("set_settings", { settings }),
+                  "Update preferences saved.",
+                )
+              }
             >
-              {label}
+              Save update preferences
             </button>
-          ))}
-        </nav>
-        <div className="settings-content">
-          {tab === "updates" && (
-            <>
-              <UpdatePanel />
-              <label className="setting-row">
-                <span>
-                  <strong>Automatic update checks</strong>
-                  <small>Check shortly after launch and every six hours.</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={settings.checkUpdates ?? true}
-                  onChange={(e) => field({ checkUpdates: e.target.checked })}
-                />
-              </label>
-              <button
-                className="secondary"
-                disabled={busy}
-                onClick={() =>
-                  void run(
-                    () => call("set_settings", { settings }),
-                    "Update preferences saved.",
-                  )
-                }
-              >
-                Save update preferences
-              </button>
-            </>
-          )}
-          {error && (
-            <div className="error-banner" role="alert">
-              {error}
-            </div>
-          )}
-          {message && <div className="success-banner">{message}</div>}
-          {tab === "general" && (
-            <>
-              <label className="setting-row">
-                <span>
-                  <strong>Appearance</strong>
-                  <small>Follow your day, or choose a mood.</small>
-                </span>
-                <select
-                  value={settings.appearance}
-                  onChange={(e) =>
-                    field({
-                      appearance: e.target.value as Settings["appearance"],
-                    })
-                  }
-                >
-                  <option value="system">System</option>
-                  <option value="light">Light</option>
-                  <option value="dark">Dark</option>
-                </select>
-              </label>
-              <label className="setting-row">
-                <span>
-                  <strong>Editor mode (all Markdown notes)</strong>
-                  <small>
-                    Changing this updates every Markdown note window. Other text
-                    formats stay in source mode.
-                  </small>
-                </span>
-                <select
-                  value={settings.mode}
-                  onChange={(e) =>
-                    field({ mode: e.target.value as Settings["mode"] })
-                  }
-                >
-                  <option value="edit">Edit</option>
-                  <option value="view">Rendered</option>
-                </select>
-              </label>
-              <div className="setting-row">
-                <span>
-                  <strong>New note size</strong>
-                  <small>Logical pixels. Each note can be resized.</small>
-                </span>
-                <div className="size-fields">
-                  <input
-                    aria-label="Default width"
-                    type="number"
-                    min="340"
-                    max="1600"
-                    value={settings.width}
-                    onChange={(e) => field({ width: Number(e.target.value) })}
-                  />
-                  <span>×</span>
-                  <input
-                    aria-label="Default height"
-                    type="number"
-                    min="240"
-                    max="1600"
-                    value={settings.height}
-                    onChange={(e) => field({ height: Number(e.target.value) })}
-                  />
-                </div>
-              </div>
-              <label className="setting-row">
-                <strong>Default font</strong>
-                <select
-                  value={settings.font}
-                  onChange={(e) => field({ font: e.target.value })}
-                >
-                  <option value="sans">Sans serif</option>
-                  <option value="serif">Serif</option>
-                  <option value="mono">Monospace</option>
-                  {settings.font &&
-                    !["sans", "serif", "mono", ...systemFonts].includes(
-                      settings.font,
-                    ) && <option value={settings.font}>{settings.font}</option>}
-                  <optgroup label="System fonts">
-                    {systemFonts.map((font) => (
-                      <option key={font} value={font}>
-                        {font}
-                      </option>
-                    ))}
-                  </optgroup>
-                </select>
-              </label>
-              <label className="setting-row">
-                <strong>Default font size</strong>
-                <input
-                  type="number"
-                  min="10"
-                  max="48"
-                  value={settings.fontSize}
-                  onChange={(e) => field({ fontSize: Number(e.target.value) })}
-                />
-              </label>
-              <p className="settings-help">
-                Font and size defaults apply to new notes. Editor mode and
-                pinned formatting tools apply to every note.
-              </p>
-              <button
-                className="text-button"
-                onClick={() => void run(() => call("open_recovery"))}
-              >
-                Open local recovery copies <ArrowUpRight size={14} />
-              </button>
-            </>
-          )}
-          {tab === "vaults" && (
-            <>
-              <h3>Your folders</h3>
-              {config.vaults.map((v) => (
-                <div className="vault-setting" key={v.id}>
-                  <FolderOpen size={18} />
-                  <div>
-                    <strong>{v.name}</strong>
-                    <button
-                      className="text-button"
-                      aria-pressed={mainVault(config)?.id === v.id}
-                      onClick={() =>
-                        void run(() =>
-                          call("set_main_vault", { vaultId: v.id }),
-                        )
-                      }
-                    >
-                      <Pin size={13} />
-                      {mainVault(config)?.id === v.id
-                        ? "Main vault"
-                        : "Set as main vault"}
-                    </button>
-                    <small>{v.path}</small>
-                    <small>
-                      {v.github
-                        ? `GitHub synced · ${v.github.repository}`
-                        : "Externally managed · no app sync"}
-                    </small>
-                  </div>
-                </div>
-              ))}
-              <button
-                className="secondary"
-                disabled={busy}
-                onClick={() => void run(registerFolder)}
-              >
-                <Plus size={15} />
-                Open a folder or Obsidian vault
-              </button>
-              <hr />
-              <h3>Private GitHub vault</h3>
-              <p className="settings-help">
-                A separate private repository, managed by Sticky Markers.
-                Existing Git repositories and Obsidian sync remain managed by
-                their owners.
-              </p>
-              {account ? (
-                <div className="account">
-                  <Github size={17} />
-                  Signed in as <strong>{account}</strong>
-                  <button
-                    onClick={() =>
-                      void run(async () => {
-                        await call("github_sign_out");
-                        setAccount("");
-                      })
-                    }
-                  >
-                    Sign out
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <label className="stacked-label">
-                    GitHub OAuth client ID
-                    <input
-                      placeholder="Public application client ID"
-                      value={settings.githubClientId}
-                      onChange={(e) =>
-                        field({ githubClientId: e.target.value })
-                      }
-                    />
-                  </label>
-                  <p className="settings-help">
-                    Development builds need a registered GitHub OAuth app with
-                    device flow enabled. This is a public identifier, not a
-                    token.
-                  </p>
-                  <button
-                    className="secondary"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(async () => {
-                        await call("set_settings", { settings });
-                        setDevice(
-                          await call("github_start", {
-                            clientId: settings.githubClientId,
-                          }),
-                        );
-                      })
-                    }
-                  >
-                    <Github size={16} />
-                    Sign in to GitHub
-                  </button>
-                </>
-              )}
-              {device && (
-                <div className="device-code">
-                  <p>Enter this code on GitHub:</p>
-                  <strong>{device.userCode}</strong>
-                  <button
-                    className="text-button"
-                    onClick={() => void external(device.verificationUri)}
-                  >
-                    Open GitHub authorization <ArrowUpRight size={14} />
-                  </button>
-                </div>
-              )}
-              <label className="stacked-label">
-                New private repository name
-                <input value={repo} onChange={(e) => setRepo(e.target.value)} />
-              </label>
-              <button
-                className="primary"
-                disabled={busy || !account}
-                onClick={() =>
-                  void run(async () => {
-                    const path = await pickFolder();
-                    if (!path) return;
-                    await call<Vault>("github_create", { name: repo, path });
-                  }, "Private vault created. Use Sync Now to download its initial contents.")
-                }
-              >
-                <Plus size={16} />
-                Create in an empty folder
-              </button>
-              <button
-                className="text-button"
-                disabled={busy || !account}
-                onClick={() =>
-                  void run(async () => {
-                    const repository = prompt(
-                      "Existing app-created repository (owner/name)",
-                    );
-                    if (!repository) return;
-                    const path = await pickFolder();
-                    if (path)
-                      await call("github_reconnect", { repository, path });
+          </>
+        )}
+        {error && (
+          <div className="error-banner" role="alert">
+            {error}
+          </div>
+        )}
+        {message && <div className="success-banner">{message}</div>}
+        {tab === "general" && (
+          <>
+            <label className="setting-row">
+              <span>
+                <strong>Appearance</strong>
+                <small>Follow your day, or choose a mood.</small>
+              </span>
+              <select
+                value={settings.appearance}
+                onChange={(e) =>
+                  field({
+                    appearance: e.target.value as Settings["appearance"],
                   })
                 }
               >
-                Reconnect an app-created vault
-              </button>
-              {active?.github && (
-                <div className="sync-options">
-                  <h3>Sync · {active.name}</h3>
-                  <label className="setting-row">
-                    <span>
-                      Every (minutes)<small>0 means manual only.</small>
-                    </span>
-                    <input
-                      type="number"
-                      min="0"
-                      max="1440"
-                      value={frequency}
-                      onChange={(e) => setFrequency(Number(e.target.value))}
-                    />
-                  </label>
-                  <label className="setting-row">
-                    Sync on exit
-                    <input
-                      type="checkbox"
-                      checked={exitSync}
-                      onChange={(e) => setExitSync(e.target.checked)}
-                    />
-                  </label>
-                  <label className="setting-row">
-                    Pause scheduled sync
-                    <input
-                      type="checkbox"
-                      checked={paused}
-                      onChange={(e) => setPaused(e.target.checked)}
-                    />
-                  </label>
-                  <button
-                    className="secondary"
-                    onClick={() =>
-                      void run(
-                        () =>
-                          call("set_sync_options", {
-                            vaultId: active.id,
-                            frequencyMinutes: frequency,
-                            onExit: exitSync,
-                            paused,
-                          }),
-                        "Sync settings saved.",
-                      )
-                    }
-                    disabled={busy}
-                  >
-                    Save sync settings
-                  </button>
-                  <button
-                    className="text-button"
-                    onClick={() =>
-                      void run(
-                        () => call("sync_vault", { vaultId: active.id }),
-                        "Synced to GitHub.",
-                      )
-                    }
-                    disabled={busy}
-                  >
-                    <RefreshCw size={15} />
-                    Sync now
-                  </button>
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      const name = prompt(
-                        "Rename the GitHub repository",
-                        active.github?.repository.split("/")[1],
-                      );
-                      if (name)
-                        void run(() =>
-                          call("github_rename", { vaultId: active.id, name }),
-                        );
-                    }}
-                  >
-                    Rename repository
-                  </button>
-                  {active.github.error && (
-                    <p className="error-text">{active.github.error}</p>
-                  )}
-                  {active.github.conflicts?.map((path) => (
-                    <div className="sync-conflict" key={path}>
-                      <strong>{path}</strong>
-                      <p className="settings-help">
-                        Both versions are in recovery. Choose which file should
-                        be kept, then sync again.
-                      </p>
-                      {["local", "remote"].map((choice) => (
-                        <button
-                          className="secondary"
-                          key={choice}
-                          disabled={busy}
-                          onClick={() => {
-                            if (
-                              confirm(
-                                `Keep ${choice === "local" ? "this device’s" : "GitHub’s"} version of ${path}? Both copies stay in local recovery.`,
-                              )
-                            )
-                              void run(
-                                () =>
-                                  call("resolve_sync_conflict", {
-                                    vaultId: active.id,
-                                    path,
-                                    choice,
-                                  }),
-                                "Conflict choice saved. Sync again when ready.",
-                              );
-                          }}
-                        >
-                          {choice === "local" ? "Keep local" : "Use GitHub"}
-                        </button>
-                      ))}
-                    </div>
-                  ))}
-                  <small>
-                    {active.github.lastSync
-                      ? `Last synced ${new Date(active.github.lastSync * 1000).toLocaleString()}`
-                      : "Not synced yet. Your notes are saved locally."}
-                  </small>
-                </div>
-              )}
-            </>
-          )}
-          {tab === "mcp" && (
-            <>
-              <h3>A note from anywhere you work.</h3>
-              <p className="settings-help">
-                Connect a local MCP harness to create, read, and edit notes.
-                Dictation works if your harness supports it. The desktop app can
-                be closed.
-              </p>
-              <p className="settings-help">
-                Grant each vault explicitly. The server never pushes or pulls
-                externally managed repositories.
-              </p>
-              {config.vaults.map((v) => (
-                <div className="mcp-vault" key={v.id}>
-                  <strong>{v.name}</strong>
-                  <code>{v.id}</code>
-                </div>
-              ))}
-              <pre className="config-code">
-                {JSON.stringify(
-                  {
-                    mcpServers: {
-                      "sticky-markers": {
-                        command: "sticky-markers-mcp",
-                        args: config.vaults
-                          .slice(0, 1)
-                          .flatMap((v) => ["--vault", v.id]),
-                      },
-                    },
-                  },
-                  null,
-                  2,
-                )}
-              </pre>
-              <button
-                className="secondary"
-                onClick={() =>
-                  void navigator.clipboard
-                    .writeText(
-                      JSON.stringify(
-                        {
-                          mcpServers: {
-                            "sticky-markers": {
-                              command: "sticky-markers-mcp",
-                              args: config.vaults
-                                .slice(0, 1)
-                                .flatMap((v) => ["--vault", v.id]),
-                            },
-                          },
-                        },
-                        null,
-                        2,
-                      ),
-                    )
-                    .then(() =>
-                      setMessage(
-                        "MCP configuration copied. Use the installed executable’s full path.",
-                      ),
-                    )
-                    .catch((e) => setError(String(e)))
+                <option value="system">System</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </label>
+            <label className="setting-row">
+              <span>
+                <strong>Editor mode (all Markdown notes)</strong>
+                <small>
+                  Changing this updates every Markdown note window. Other text
+                  formats stay in source mode.
+                </small>
+              </span>
+              <select
+                value={settings.mode}
+                onChange={(e) =>
+                  field({ mode: e.target.value as Settings["mode"] })
                 }
               >
-                <Copy size={15} />
-                Copy configuration
-              </button>
-              <p className="settings-help">
-                Use the full path to the installed MCP executable. Add
-                --read-only for a read-only connection. Cloud-only harnesses
-                need an authenticated bridge; this release uses local stdio.
-              </p>
-            </>
-          )}
-        </div>
-        <footer>
-          <span>{busy ? "Working…" : "Your notes stay plain Markdown."}</span>
-          <button
-            className="primary"
-            disabled={busy}
-            onClick={() =>
-              void run(
-                () => call("set_settings", { settings }),
-                "Preferences saved.",
-              )
-            }
-          >
-            <Check size={15} />
-            Save preferences
-          </button>
-        </footer>
-      </section>
-    </div>
+                <option value="edit">Edit</option>
+                <option value="view">Rendered</option>
+              </select>
+            </label>
+            <div className="setting-row">
+              <span>
+                <strong>New note size</strong>
+                <small>Logical pixels. Each note can be resized.</small>
+              </span>
+              <div className="size-fields">
+                <input
+                  aria-label="Default width"
+                  type="number"
+                  min="340"
+                  max="1600"
+                  value={settings.width}
+                  onChange={(e) => field({ width: Number(e.target.value) })}
+                />
+                <span>×</span>
+                <input
+                  aria-label="Default height"
+                  type="number"
+                  min="240"
+                  max="1600"
+                  value={settings.height}
+                  onChange={(e) => field({ height: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+            <div className="setting-color">
+              <strong>Default note color</strong>
+              <ColorSwatches
+                label="Default note color"
+                value={settings.color}
+                dark={dark}
+                onChange={(color) => field({ color })}
+              />
+            </div>
+            <label className="setting-row">
+              <strong>Default font</strong>
+              <select
+                value={settings.font}
+                onChange={(e) => field({ font: e.target.value })}
+              >
+                <FontOptions current={settings.font} system={systemFonts} />
+              </select>
+            </label>
+            <label className="setting-row">
+              <strong>Default font size</strong>
+              <input
+                type="number"
+                min="10"
+                max="48"
+                value={settings.fontSize}
+                onChange={(e) => field({ fontSize: Number(e.target.value) })}
+              />
+            </label>
+            <p className="settings-help">
+              Font and size defaults apply to new notes. Editor mode and pinned
+              formatting tools apply to every note.
+            </p>
+            <button
+              className="text-button"
+              onClick={() => void run(() => call("open_recovery"))}
+            >
+              Open local recovery copies <ArrowUpRight size={14} />
+            </button>
+          </>
+        )}
+        {tab === "vaults" && (
+          <>
+            <h3>Your folders</h3>
+            {config.vaults.map((v) => (
+              <div className="vault-setting" key={v.id}>
+                <FolderOpen size={18} />
+                <div>
+                  <strong>{v.name}</strong>
+                  <button
+                    className="text-button"
+                    aria-pressed={mainVault(config)?.id === v.id}
+                    onClick={() =>
+                      void run(() => call("set_main_vault", { vaultId: v.id }))
+                    }
+                  >
+                    <Pin size={13} />
+                    {mainVault(config)?.id === v.id
+                      ? "Main vault"
+                      : "Set as main vault"}
+                  </button>
+                  <small>{v.path}</small>
+                  <div className="vault-default-color">
+                    <strong>Default note color</strong>
+                    <button
+                      className="text-button"
+                      aria-pressed={v.defaultColor == null}
+                      onClick={() =>
+                        void run(() =>
+                          call("set_vault_defaults", {
+                            vaultId: v.id,
+                            color: null,
+                          }),
+                        )
+                      }
+                    >
+                      Use app default
+                    </button>
+                    <ColorSwatches
+                      label={`Default color for ${v.name}`}
+                      value={v.defaultColor}
+                      dark={dark}
+                      onChange={(color) =>
+                        void run(() =>
+                          call("set_vault_defaults", { vaultId: v.id, color }),
+                        )
+                      }
+                    />
+                  </div>
+                  <small>
+                    {v.github
+                      ? `GitHub synced · ${v.github.repository}`
+                      : "Externally managed · no app sync"}
+                  </small>
+                </div>
+              </div>
+            ))}
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() => void run(registerFolder)}
+            >
+              <Plus size={15} />
+              Open a folder or Obsidian vault
+            </button>
+            <hr />
+            <h3>Private GitHub vault</h3>
+            <p className="settings-help">
+              A separate private repository, managed by Sticky Markers. Existing
+              Git repositories and Obsidian sync remain managed by their owners.
+            </p>
+            {account ? (
+              <div className="account">
+                <Github size={17} />
+                Signed in as <strong>{account}</strong>
+                <button
+                  onClick={() =>
+                    void run(async () => {
+                      await call("github_sign_out");
+                      setAccount("");
+                    })
+                  }
+                >
+                  Sign out
+                </button>
+              </div>
+            ) : (
+              <>
+                <label className="stacked-label">
+                  GitHub OAuth client ID
+                  <input
+                    placeholder="Public application client ID"
+                    value={settings.githubClientId}
+                    onChange={(e) => field({ githubClientId: e.target.value })}
+                  />
+                </label>
+                <p className="settings-help">
+                  Development builds need a registered GitHub OAuth app with
+                  device flow enabled. This is a public identifier, not a token.
+                </p>
+                <button
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      await call("set_settings", { settings });
+                      setDevice(
+                        await call("github_start", {
+                          clientId: settings.githubClientId,
+                        }),
+                      );
+                    })
+                  }
+                >
+                  <Github size={16} />
+                  Sign in to GitHub
+                </button>
+              </>
+            )}
+            {device && (
+              <div className="device-code">
+                <p>Enter this code on GitHub:</p>
+                <strong>{device.userCode}</strong>
+                <button
+                  className="text-button"
+                  onClick={() => void external(device.verificationUri)}
+                >
+                  Open GitHub authorization <ArrowUpRight size={14} />
+                </button>
+              </div>
+            )}
+            <label className="stacked-label">
+              New private repository name
+              <input value={repo} onChange={(e) => setRepo(e.target.value)} />
+            </label>
+            <button
+              className="primary"
+              disabled={busy || !account}
+              onClick={() =>
+                void run(async () => {
+                  const path = await pickFolder();
+                  if (!path) return;
+                  await call<Vault>("github_create", { name: repo, path });
+                }, "Private vault created. Use Sync Now to download its initial contents.")
+              }
+            >
+              <Plus size={16} />
+              Create in an empty folder
+            </button>
+            <button
+              className="text-button"
+              disabled={busy || !account}
+              onClick={() =>
+                void run(async () => {
+                  const repository = prompt(
+                    "Existing app-created repository (owner/name)",
+                  );
+                  if (!repository) return;
+                  const path = await pickFolder();
+                  if (path)
+                    await call("github_reconnect", { repository, path });
+                })
+              }
+            >
+              Reconnect an app-created vault
+            </button>
+            {active?.github && (
+              <div className="sync-options">
+                <h3>Sync · {active.name}</h3>
+                <label className="setting-row">
+                  <span>
+                    Every (minutes)<small>0 means manual only.</small>
+                  </span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1440"
+                    value={frequency}
+                    onChange={(e) => setFrequency(Number(e.target.value))}
+                  />
+                </label>
+                <label className="setting-row">
+                  Sync on exit
+                  <input
+                    type="checkbox"
+                    checked={exitSync}
+                    onChange={(e) => setExitSync(e.target.checked)}
+                  />
+                </label>
+                <label className="setting-row">
+                  Pause scheduled sync
+                  <input
+                    type="checkbox"
+                    checked={paused}
+                    onChange={(e) => setPaused(e.target.checked)}
+                  />
+                </label>
+                <button
+                  className="secondary"
+                  onClick={() =>
+                    void run(
+                      () =>
+                        call("set_sync_options", {
+                          vaultId: active.id,
+                          frequencyMinutes: frequency,
+                          onExit: exitSync,
+                          paused,
+                        }),
+                      "Sync settings saved.",
+                    )
+                  }
+                  disabled={busy}
+                >
+                  Save sync settings
+                </button>
+                <button
+                  className="text-button"
+                  onClick={() =>
+                    void run(
+                      () => call("sync_vault", { vaultId: active.id }),
+                      "Synced to GitHub.",
+                    )
+                  }
+                  disabled={busy}
+                >
+                  <RefreshCw size={15} />
+                  Sync now
+                </button>
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    const name = prompt(
+                      "Rename the GitHub repository",
+                      active.github?.repository.split("/")[1],
+                    );
+                    if (name)
+                      void run(() =>
+                        call("github_rename", { vaultId: active.id, name }),
+                      );
+                  }}
+                >
+                  Rename repository
+                </button>
+                {active.github.error && (
+                  <p className="error-text">{active.github.error}</p>
+                )}
+                {active.github.conflicts?.map((path) => (
+                  <div className="sync-conflict" key={path}>
+                    <strong>{path}</strong>
+                    <p className="settings-help">
+                      Both versions are in recovery. Choose which file should be
+                      kept, then sync again.
+                    </p>
+                    {["local", "remote"].map((choice) => (
+                      <button
+                        className="secondary"
+                        key={choice}
+                        disabled={busy}
+                        onClick={() => {
+                          if (
+                            confirm(
+                              `Keep ${choice === "local" ? "this device’s" : "GitHub’s"} version of ${path}? Both copies stay in local recovery.`,
+                            )
+                          )
+                            void run(
+                              () =>
+                                call("resolve_sync_conflict", {
+                                  vaultId: active.id,
+                                  path,
+                                  choice,
+                                }),
+                              "Conflict choice saved. Sync again when ready.",
+                            );
+                        }}
+                      >
+                        {choice === "local" ? "Keep local" : "Use GitHub"}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+                <small>
+                  {active.github.lastSync
+                    ? `Last synced ${new Date(active.github.lastSync * 1000).toLocaleString()}`
+                    : "Not synced yet. Your notes are saved locally."}
+                </small>
+              </div>
+            )}
+          </>
+        )}
+        {tab === "mcp" && (
+          <>
+            <h3>A note from anywhere you work.</h3>
+            <p className="settings-help">
+              Connect a local MCP harness to create, read, and edit notes.
+              Dictation works if your harness supports it. The desktop app can
+              be closed.
+            </p>
+            <p className="settings-help">
+              Grant each vault explicitly. The server never pushes or pulls
+              externally managed repositories.
+            </p>
+            {config.vaults.map((v) => (
+              <div className="mcp-vault" key={v.id}>
+                <strong>{v.name}</strong>
+                <code>{v.id}</code>
+              </div>
+            ))}
+            <pre className="config-code">
+              {JSON.stringify(
+                {
+                  mcpServers: {
+                    "sticky-markers": {
+                      command: "sticky-markers-mcp",
+                      args: config.vaults
+                        .slice(0, 1)
+                        .flatMap((v) => ["--vault", v.id]),
+                    },
+                  },
+                },
+                null,
+                2,
+              )}
+            </pre>
+            <button
+              className="secondary"
+              onClick={() =>
+                void navigator.clipboard
+                  .writeText(
+                    JSON.stringify(
+                      {
+                        mcpServers: {
+                          "sticky-markers": {
+                            command: "sticky-markers-mcp",
+                            args: config.vaults
+                              .slice(0, 1)
+                              .flatMap((v) => ["--vault", v.id]),
+                          },
+                        },
+                      },
+                      null,
+                      2,
+                    ),
+                  )
+                  .then(() =>
+                    setMessage(
+                      "MCP configuration copied. Use the installed executable’s full path.",
+                    ),
+                  )
+                  .catch((e) => setError(String(e)))
+              }
+            >
+              <Copy size={15} />
+              Copy configuration
+            </button>
+            <p className="settings-help">
+              Use the full path to the installed MCP executable. Add --read-only
+              for a read-only connection. Cloud-only harnesses need an
+              authenticated bridge; this release uses local stdio.
+            </p>
+          </>
+        )}
+      </div>
+      <footer>
+        <span>{busy ? "Working…" : ""}</span>
+        <button
+          className="primary"
+          disabled={busy}
+          onClick={() =>
+            void run(
+              () => call("set_settings", { settings }),
+              "Preferences saved.",
+            )
+          }
+        >
+          <Check size={15} />
+          Save preferences
+        </button>
+      </footer>
+    </section>
   );
 }

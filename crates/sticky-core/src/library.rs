@@ -49,115 +49,125 @@ impl Library {
         query: &str,
         pinned: bool,
     ) -> Result<Page> {
+        let config = core.config()?;
+        let vaults: Vec<_> = if id == "*" {
+            config.vaults.clone()
+        } else {
+            vec![core.vault(id)?]
+        };
         let mut indexes = self.indexes.lock().unwrap();
-        if indexes
-            .get(id)
-            .is_none_or(|i| i.scanned.elapsed() > Duration::from_secs(10))
-        {
-            let vault = core.vault(id)?;
-            if !Path::new(&vault.path).is_dir() {
-                return Err(message("Vault folder is unavailable"));
-            }
-            let mut entries = Vec::new();
-            for item in WalkDir::new(&vault.path)
-                .follow_links(false)
-                .into_iter()
-                .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        let mut entries = Vec::new();
+        for vault in vaults {
+            let id = vault.id.as_str();
+            if indexes
+                .get(id)
+                .is_none_or(|i| i.scanned.elapsed() > Duration::from_secs(10))
             {
-                let item = item.map_err(|e| message(e.to_string()))?;
-                if !item.file_type().is_file() {
-                    continue;
+                if !Path::new(&vault.path).is_dir() {
+                    return Err(message("Vault folder is unavailable"));
                 }
-                let metadata = item.metadata().map_err(|e| message(e.to_string()))?;
-                if metadata.len() > NOTE_LIMIT as u64 {
-                    continue;
-                }
-                // Sniff a small prefix, never read 100 KiB per file merely to list names.
-                let mut sample = [0; 512];
-                let Ok(mut file) = File::open(item.path()) else {
-                    continue;
-                };
-                let Ok(count) = file.read(&mut sample) else {
-                    continue;
-                };
-                let sample = &sample[..count];
-                if sample.iter().any(|b| *b == 0)
-                    || std::str::from_utf8(sample)
-                        .err()
-                        .is_some_and(|e| e.error_len().is_some())
+                let mut entries = Vec::new();
+                for item in WalkDir::new(&vault.path)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
                 {
-                    continue;
+                    let item = item.map_err(|e| message(e.to_string()))?;
+                    if !item.file_type().is_file() {
+                        continue;
+                    }
+                    let metadata = item.metadata().map_err(|e| message(e.to_string()))?;
+                    if metadata.len() > NOTE_LIMIT as u64 {
+                        continue;
+                    }
+                    // Sniff a small prefix, never read 100 KiB per file merely to list names.
+                    let mut sample = [0; 512];
+                    let Ok(mut file) = File::open(item.path()) else {
+                        continue;
+                    };
+                    let Ok(count) = file.read(&mut sample) else {
+                        continue;
+                    };
+                    let sample = &sample[..count];
+                    if sample.iter().any(|b| *b == 0)
+                        || std::str::from_utf8(sample)
+                            .err()
+                            .is_some_and(|e| e.error_len().is_some())
+                    {
+                        continue;
+                    }
+                    let path = item
+                        .path()
+                        .strip_prefix(&vault.path)
+                        .map_err(|e| message(e.to_string()))?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let kind = item
+                        .path()
+                        .extension()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase();
+                    entries.push(Entry {
+                        vault_id: id.into(),
+                        path,
+                        title: item.file_name().to_string_lossy().into(),
+                        modified: metadata
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0),
+                        size: metadata.len(),
+                        kind,
+                    });
                 }
-                let path = item
-                    .path()
-                    .strip_prefix(&vault.path)
-                    .map_err(|e| message(e.to_string()))?
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let kind = item
-                    .path()
-                    .extension()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_lowercase();
-                entries.push(Entry {
-                    vault_id: id.into(),
-                    path,
-                    title: item.file_name().to_string_lossy().into(),
-                    modified: metadata
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0),
-                    size: metadata.len(),
-                    kind,
-                });
+                indexes.insert(
+                    id.into(),
+                    Index {
+                        scanned: Instant::now(),
+                        entries,
+                        searches: BTreeMap::new(),
+                    },
+                );
             }
-            indexes.insert(
-                id.into(),
-                Index {
-                    scanned: Instant::now(),
-                    entries,
-                    searches: BTreeMap::new(),
-                },
+            let index = indexes.get_mut(id).unwrap();
+            let q = query.to_lowercase();
+            if !q.is_empty() && !index.searches.contains_key(&q) {
+                // Content search remains available, but scanning bodies is lazy and
+                // runs only for an explicit query on the desktop worker thread.
+                let matches = index
+                    .entries
+                    .iter()
+                    .filter(|e| {
+                        e.path.to_lowercase().contains(&q)
+                            || crate::safe_path(Path::new(&vault.path), &e.path)
+                                .and_then(|p| crate::read_text(&p))
+                                .is_ok_and(|text| text.to_lowercase().contains(&q))
+                    })
+                    .map(|e| e.path.clone())
+                    .collect();
+                if index.searches.len() >= 8 {
+                    index.searches.clear();
+                }
+                index.searches.insert(q.clone(), matches);
+            }
+            entries.extend(
+                index
+                    .entries
+                    .iter()
+                    .filter(|e| {
+                        (q.is_empty() || index.searches[&q].contains(&e.path))
+                            && (!pinned || {
+                                config
+                                    .styles
+                                    .get(&format!("{id}/{}", e.path))
+                                    .is_some_and(|s| s.pinned)
+                            })
+                    })
+                    .cloned(),
             );
         }
-        let index = indexes.get_mut(id).unwrap();
-        let q = query.to_lowercase();
-        if !q.is_empty() && !index.searches.contains_key(&q) {
-            // Content search remains available, but scanning bodies is lazy and
-            // runs only for an explicit query on the desktop worker thread.
-            let vault = core.vault(id)?;
-            let matches = index
-                .entries
-                .iter()
-                .filter(|e| {
-                    e.path.to_lowercase().contains(&q)
-                        || crate::safe_path(Path::new(&vault.path), &e.path)
-                            .and_then(|p| crate::read_text(&p))
-                            .is_ok_and(|text| text.to_lowercase().contains(&q))
-                })
-                .map(|e| e.path.clone())
-                .collect();
-            if index.searches.len() >= 8 {
-                index.searches.clear();
-            }
-            index.searches.insert(q.clone(), matches);
-        }
-        let config = if pinned { Some(core.config()?) } else { None };
-        let mut entries: Vec<_> = index
-            .entries
-            .iter()
-            .filter(|e| {
-                (q.is_empty() || index.searches[&q].contains(&e.path))
-                    && config.as_ref().is_none_or(|c| {
-                        c.styles
-                            .get(&format!("{id}/{}", e.path))
-                            .is_some_and(|s| s.pinned)
-                    })
-            })
-            .collect();
         entries.sort_by(|a, b| match sort {
             "name" => a
                 .title
@@ -166,6 +176,7 @@ impl Library {
                 .then(a.path.cmp(&b.path)),
             "size" => b.size.cmp(&a.size).then(a.path.cmp(&b.path)),
             "type" => a.kind.cmp(&b.kind).then(a.path.cmp(&b.path)),
+            "oldest" => a.modified.cmp(&b.modified).then(a.path.cmp(&b.path)),
             _ => b.modified.cmp(&a.modified).then(a.path.cmp(&b.path)),
         });
         Ok(Page {
@@ -174,7 +185,6 @@ impl Library {
                 .into_iter()
                 .skip(offset)
                 .take(limit.clamp(1, 100))
-                .cloned()
                 .collect(),
         })
     }
@@ -296,6 +306,46 @@ mod tests {
                 .unwrap()
                 .total,
             300
+        );
+    }
+    #[test]
+    fn global_tabs_page_across_vaults_and_sort_oldest() {
+        let root = tempfile::tempdir().unwrap();
+        let core = Core::new(root.path().join("data")).unwrap();
+        let mut refs = Vec::new();
+        for (name, time) in [("first", 10), ("second", 20)] {
+            let folder = root.path().join(name);
+            std::fs::create_dir(&folder).unwrap();
+            let v = core.register(&folder).unwrap();
+            core.create(&v.id, Some("same.md"), name, None).unwrap();
+            std::fs::File::open(folder.join("same.md"))
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(time)),
+                )
+                .unwrap();
+            let mut style = core.style(&v.id, "same.md").unwrap();
+            style.pinned = name == "second";
+            core.set_style(&v.id, "same.md", style).unwrap();
+            refs.push(v.id);
+        }
+        let library = Library::default();
+        let newest = library.page(&core, "*", 0, 1, "date", "", false).unwrap();
+        assert_eq!(newest.total, 2);
+        assert_eq!(newest.notes[0].vault_id, refs[1]);
+        let oldest = library.page(&core, "*", 0, 1, "oldest", "", false).unwrap();
+        assert_eq!(oldest.notes[0].vault_id, refs[0]);
+        let next = library.page(&core, "*", 1, 1, "oldest", "", false).unwrap();
+        assert_eq!(next.notes[0].vault_id, refs[1]);
+        let pinned = library.page(&core, "*", 0, 24, "date", "", true).unwrap();
+        assert_eq!(pinned.total, 1);
+        assert_eq!(pinned.notes[0].vault_id, refs[1]);
+        assert_eq!(
+            library
+                .page(&core, &refs[0], 0, 24, "date", "", false)
+                .unwrap()
+                .total,
+            1
         );
     }
     #[test]

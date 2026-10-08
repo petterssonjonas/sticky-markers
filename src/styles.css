@@ -1,5 +1,15 @@
+@font-face { font-family: "Libron"; src: url("/fonts/libron/Libron-Regular.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+@font-face { font-family: "Libron"; src: url("/fonts/libron/Libron-Bold.ttf") format("truetype"); font-style: normal; font-weight: 700; font-display: swap; }
+@font-face { font-family: "Libron"; src: url("/fonts/libron/Libron-Italic.ttf") format("truetype"); font-style: italic; font-weight: 400; font-display: swap; }
+@font-face { font-family: "Libron"; src: url("/fonts/libron/Libron-BoldItalic.ttf") format("truetype"); font-style: italic; font-weight: 700; font-display: swap; }
+@font-face { font-family: "Barlow"; src: url("/fonts/barlow/Barlow-Regular.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+@font-face { font-family: "Barlow"; src: url("/fonts/barlow/Barlow-Bold.ttf") format("truetype"); font-style: normal; font-weight: 700; font-display: swap; }
+@font-face { font-family: "Barlow"; src: url("/fonts/barlow/Barlow-Italic.ttf") format("truetype"); font-style: italic; font-weight: 400; font-display: swap; }
+@font-face { font-family: "Barlow"; src: url("/fonts/barlow/Barlow-BoldItalic.ttf") format("truetype"); font-style: italic; font-weight: 700; font-display: swap; }
+@font-face { font-family: "Noto Sans"; src: url("/fonts/noto-sans/NotoSans.ttf") format("truetype"); font-style: normal; font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Noto Sans"; src: url("/fonts/noto-sans/NotoSans-Italic.ttf") format("truetype"); font-style: italic; font-weight: 100 900; font-display: swap; }
 :root {
-  font-family: "Segoe UI", Inter, system-ui, sans-serif;
+  font-family: "Libron", "Barlow", "Noto Sans", sans-serif;
   color: #343c34;
   background: #f7f6f0;
   font-synthesis: none;
@@ -1440,3 +1450,43 @@ hr {
 .line-live-preview .cm-widgetBuffer { height: 0 !important; }
 
 .lp-footnote { font-size: .7em; vertical-align: super; line-height: 0; }
+
+/* Fixed-width navigator with a compact, tabbed, expandable sidebar pane. */
+:root:not([data-appearance="dark"]) {
+  color-scheme: light;
+  --bg: #eeeae4; --sidebar: #e7e2da; --panel: #f6f2eb;
+  --text: #433e37; --muted: #786f64; --line: #d3cbc0;
+  background: var(--bg); color: var(--text);
+}
+.collection .sidebar-search { height: 27px; padding: 3px 7px; gap: 7px; margin-bottom: 5px; }
+.collection .sidebar-search input { font-size: 13px; padding: 0; line-height: 1.15; }
+.collection .sidebar-sort { font-size: 12px; padding-bottom: 6px; }
+.collection .sidebar-sort select { height: 26px; padding: 1px 6px; font-size: 12px; }
+.collection .sidebar-note-card { font-size: 13px; line-height: 1.25; }
+.collection .vault-toggle { font-size: 13px; }
+.collection.panel-expanded .sidebar { width: 300px; flex-basis: 300px; }
+.collection .collection-main { min-width: 300px; padding: 0 12px; }
+.collection-main .collection-tools { margin: 0 0 12px; padding: 0; }
+.collection-main .tabs { display: flex; gap: 10px; min-height: 39px; width: 100%; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.collection-main .tabs button { white-space: nowrap; flex-shrink: 0; font-size: 13px; padding: 8px 2px; }
+.collection-main .tabs button.active { border-bottom: 2px solid var(--accent); }
+.settings-pane.settings-dialog { width: 100%; max-height: none; border: 0; border-radius: 0; box-shadow: none; background: transparent; }
+.settings-pane > header { padding: 6px 0 12px; }
+.settings-pane h2 { font: inherit; font-size: 18px; margin: 0; }
+.settings-pane .settings-tabs { padding: 0; gap: 10px; flex-wrap: wrap; }
+.settings-pane .settings-tabs button { font-size: 12px; padding: 6px 0; }
+.settings-pane .settings-content { padding: 6px 0 12px; overflow: visible; }
+.settings-pane .setting-row { padding: 10px 0; font-size: 13px; flex-wrap: wrap; }
+.settings-pane .setting-row small, .settings-pane .settings-help { font-size: 12px; }
+.settings-pane .setting-row select { padding: 3px 6px; height: 29px; }
+.settings-pane .setting-row input { padding: 3px 6px; }
+.settings-pane > footer { padding: 10px 0; }
+.setting-color, .vault-default-color { padding: 10px 0; font-size: 13px; }
+.setting-color .swatches, .vault-default-color .swatches { max-width: 288px; margin-top: 10px; }
+.settings-pane .swatches button { width: 24px; height: 24px; padding: 0; }
+.vault-setting { align-items: flex-start; }
+.vault-setting > div { min-width: 0; flex: 1; }
+.settings-pane .vault-setting small { overflow-wrap: anywhere; }
+
+.collection .note-card h2 { font-family: inherit; }
+.collection-main .collection-tools { position: sticky; top: 0; z-index: 3; background: var(--bg); }

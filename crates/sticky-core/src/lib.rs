@@ -113,6 +113,8 @@ pub fn timestamp() -> u64 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Vault {
+    #[serde(default)]
+    pub default_color: Option<usize>,
     pub id: String,
     pub name: String,
     pub path: String,
@@ -143,7 +145,7 @@ impl Default for Settings {
             appearance: "system".into(),
             palette: "classic".into(),
             color: 0,
-            font: "sans".into(),
+            font: "libron".into(),
             font_size: 16.0,
             github_client_id: option_env!("STICKY_GITHUB_CLIENT_ID").unwrap_or("").into(),
             check_updates: true,
@@ -304,6 +306,7 @@ impl Core {
                 ));
             }
             let v = Vault {
+                default_color: None,
                 id: uuid::Uuid::new_v4().to_string(),
                 name: root
                     .file_name()
@@ -718,6 +721,19 @@ impl Core {
         })?;
         Ok(new)
     }
+    pub fn set_vault_default_color(&self, id: &str, color: Option<usize>) -> Result<()> {
+        if color.is_some_and(|v| v > 15) {
+            return Err(message("Invalid default color"));
+        }
+        self.update_config(|c| {
+            c.vaults
+                .iter_mut()
+                .find(|v| v.id == id)
+                .ok_or_else(|| message("Unknown vault"))?
+                .default_color = color;
+            Ok(())
+        })
+    }
     pub fn style(&self, id: &str, path: &str) -> Result<NoteStyle> {
         let c = self.config()?;
         Ok(c.styles
@@ -725,7 +741,12 @@ impl Core {
             .cloned()
             .unwrap_or_else(|| NoteStyle {
                 palette: c.settings.palette,
-                color: c.settings.color,
+                color: c
+                    .vaults
+                    .iter()
+                    .find(|v| v.id == id)
+                    .and_then(|v| v.default_color)
+                    .unwrap_or(c.settings.color),
                 font: c.settings.font,
                 font_size: c.settings.font_size,
                 mode: if is_markdown(path) {
@@ -1066,6 +1087,36 @@ mod tests {
                 .count(),
             1
         );
+    }
+    #[test]
+    fn note_colors_are_independent_of_global_and_vault_defaults() {
+        let (_root, core, vault) = fixture();
+        core.update_config(|c| {
+            c.settings.color = 8;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(core.style(&vault.id, "new.md").unwrap().color, 8);
+        core.set_vault_default_color(&vault.id, Some(12)).unwrap();
+        assert_eq!(core.style(&vault.id, "draft.md").unwrap().color, 12);
+        core.create(&vault.id, Some("existing.md"), "Existing", None)
+            .unwrap();
+        core.opened(&vault.id, "existing.md", true).unwrap();
+        let mut own = core.style(&vault.id, "existing.md").unwrap();
+        own.color = 5;
+        core.set_style(&vault.id, "existing.md", own).unwrap();
+        core.set_vault_default_color(&vault.id, Some(15)).unwrap();
+        core.update_config(|c| {
+            c.settings.color = 3;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(core.style(&vault.id, "existing.md").unwrap().color, 5);
+        assert_eq!(core.style(&vault.id, "next.md").unwrap().color, 15);
+        core.set_vault_default_color(&vault.id, None).unwrap();
+        assert_eq!(core.style(&vault.id, "next.md").unwrap().color, 3);
+        assert!(core.set_vault_default_color(&vault.id, Some(16)).is_err());
+        assert!(core.set_vault_default_color("missing", None).is_err());
     }
     #[cfg(unix)]
     #[test]

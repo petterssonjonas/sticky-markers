@@ -68,7 +68,7 @@ test("settings, theme and MCP configuration are accessible", async ({
   await openPanel(page);
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page
-    .getByRole("dialog", { name: "Settings" })
+    .getByRole("region", { name: "Settings" })
     .getByRole("combobox")
     .first()
     .selectOption("dark");
@@ -225,7 +225,7 @@ test("blank drafts stay off disk; first save names the note and pinning survives
   await openPanel(page);
   await page
     .locator(".tabs")
-    .getByRole("button", { name: "Pinned notes" })
+    .getByRole("tab", { name: "Pinned notes" })
     .click();
   await expect(page.locator(".note-card")).toHaveCount(1);
   await page.locator(".note-card").click();
@@ -237,7 +237,7 @@ test("blank drafts stay off disk; first save names the note and pinning survives
   await openPanel(page);
   await page
     .locator(".tabs")
-    .getByRole("button", { name: "Pinned notes" })
+    .getByRole("tab", { name: "Pinned notes" })
     .click();
   await expect(page.locator(".note-card")).toHaveCount(0);
 });
@@ -301,7 +301,9 @@ test("small windows omit save indicators and use compact green font controls", a
   ).toBe((await font.boundingBox())!.height);
   await expect(page.locator(".menu-vault")).toHaveText("Everyday notes");
   await expect(
-    page.getByLabel("Note font").locator("optgroup option"),
+    page
+      .getByLabel("Note font")
+      .locator('optgroup[label="System fonts"] option'),
   ).toHaveCount(3);
   expect(
     await page

@@ -11,7 +11,7 @@ use sticky_core::{message, Core, NoteStyle, Result, Settings};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowSizeConstraints,
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
@@ -49,6 +49,18 @@ fn window_icon(app: &AppHandle, window: &tauri::WebviewWindow) {
         let _ = window.set_icon(icon.clone());
     }
 }
+fn main_constraints(expanded: bool) -> WindowSizeConstraints {
+    WindowSizeConstraints {
+        min_width: Some(tauri::LogicalUnit::new(if expanded { 600.0 } else { 300.0 }).into()),
+        max_width: if expanded {
+            None
+        } else {
+            Some(tauri::LogicalUnit::new(300.0).into())
+        },
+        min_height: Some(tauri::LogicalUnit::new(400.0).into()),
+        ..Default::default()
+    }
+}
 fn show_main(app: &AppHandle) -> std::result::Result<(), String> {
     show_main_page(app, false)
 }
@@ -75,7 +87,7 @@ fn show_main_page(app: &AppHandle, updates: bool) -> std::result::Result<(), Str
     )
     .title("Sticky Markers")
     .inner_size(300.0, 700.0)
-    .min_inner_size(300.0, 400.0)
+    .inner_size_constraints(main_constraints(false))
     .decorations(false)
     // Use the DOM drag events for moving selected notes between vaults.
     .disable_drag_drop_handler()
@@ -526,6 +538,12 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
             a["query"].as_str().unwrap_or(""),
             a["pinned"].as_bool().unwrap_or(false)
         )?),
+        "set_vault_defaults" => {
+            let color: Option<usize> = serde_json::from_value(a["color"].clone())?;
+            core.set_vault_default_color(id()?, color)?;
+            changed = true;
+            Value::Null
+        }
         "set_main_vault" => {
             let id = id()?.to_owned();
             core.vault(&id)?;
@@ -543,6 +561,8 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
                     .inner_size()
                     .map(|s| s.height as f64 / w.scale_factor().unwrap_or(1.0))
                     .unwrap_or(700.0);
+                w.set_size_constraints(main_constraints(expanded))
+                    .map_err(|e| message(e.to_string()))?;
                 w.set_size(tauri::LogicalSize::new(
                     if expanded { 1120.0 } else { 300.0 },
                     height,
@@ -711,6 +731,7 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
             if !(340.0..=1600.0).contains(&s.width)
                 || !(240.0..=1600.0).contains(&s.height)
                 || !(10.0..=48.0).contains(&s.font_size)
+                || s.color > 15
             {
                 return Err(message(
                     "Note size or font size is outside its supported range",

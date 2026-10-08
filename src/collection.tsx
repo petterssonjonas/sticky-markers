@@ -8,6 +8,7 @@ import {
   Suspense,
   memo,
   type CSSProperties,
+  type ReactNode,
   type MouseEvent,
   type DragEvent,
 } from "react";
@@ -183,7 +184,12 @@ const PreviewCard = memo(function PreviewCard({
       live = false;
     };
   }, [near, note.vaultId, note.path, note.modified, note.size]);
-  const s = config.styles[noteKey(note)] ?? defaultStyle(config.settings);
+  const s =
+    config.styles[noteKey(note)] ??
+    defaultStyle(
+      config.settings,
+      config.vaults.find((v) => v.id === note.vaultId),
+    );
   const c = colors("classic", s.color, dark);
   return (
     <button
@@ -237,6 +243,7 @@ function VaultList({
   onDrag,
   onDrop,
   onMain,
+  pinned = false,
 }: {
   vault: Vault;
   open: boolean;
@@ -254,8 +261,9 @@ function VaultList({
   onDrag: (note: LibraryEntry, event: DragEvent) => void;
   onDrop: (event: DragEvent, id: string) => void;
   onMain: () => void;
+  pinned?: boolean;
 }) {
-  const page = useLibrary(vault.id, open, sort, query, false, 80);
+  const page = useLibrary(vault.id, open, sort, query, pinned, 80);
   const hover = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [over, setOver] = useState(false);
   const clear = () => {
@@ -267,7 +275,7 @@ function VaultList({
     <section
       className={`vault-group ${over ? "drop-target" : ""}`}
       onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes(dragType)) return;
+        if (pinned || !e.dataTransfer.types.includes(dragType)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
         setOver(true);
@@ -286,7 +294,7 @@ function VaultList({
       onDrop={(e) => {
         clear();
         setOver(false);
-        onDrop(e, vault.id);
+        if (!pinned) onDrop(e, vault.id);
       }}
     >
       <div className="vault-row">
@@ -297,19 +305,21 @@ function VaultList({
           onClick={toggle}
         >
           <ChevronRight size={15} className={open ? "expanded" : ""} />
-          <FolderOpen size={16} />
+          {pinned ? <Pin size={16} /> : <FolderOpen size={16} />}
           <span>{vault.name}</span>
           {open && <small>{page.total}</small>}
         </button>
-        <button
-          className="vault-main-pin"
-          aria-label={`Set ${vault.name} as main vault`}
-          title="Use for new notes and imports"
-          aria-pressed={mainVault(config)?.id === vault.id}
-          onClick={onMain}
-        >
-          <Pin size={14} />
-        </button>
+        {!pinned && (
+          <button
+            className="vault-main-pin"
+            aria-label={`Set ${vault.name} as main vault`}
+            title="Use for new notes and imports"
+            aria-pressed={mainVault(config)?.id === vault.id}
+            onClick={onMain}
+          >
+            <Pin size={14} />
+          </button>
+        )}
       </div>
       {open && (
         <div
@@ -320,10 +330,14 @@ function VaultList({
         >
           {page.notes.map((n) => (
             <button
-              key={n.path}
+              key={noteKey(n)}
               role="option"
               aria-selected={selected.has(noteKey(n))}
-              title={n.path}
+              title={
+                pinned
+                  ? `${config.vaults.find((v) => v.id === n.vaultId)?.name} / ${n.path}`
+                  : n.path
+              }
               className="sidebar-note-card"
               draggable
               onDragStart={(e) => onDrag(n, e)}
@@ -366,11 +380,15 @@ export function Collection({
   refresh,
   dark,
   openSettings,
+  settingsTab,
+  settingsContent,
 }: {
   config: Config;
   refresh: () => Promise<void>;
   dark: boolean;
   openSettings: (tab: string) => void;
+  settingsTab: string | null;
+  settingsContent: ReactNode;
 }) {
   const main = mainVault(config);
   const [expanded, setExpanded] = useState(false),
@@ -381,13 +399,12 @@ export function Collection({
     [query, setQuery] = useState(""),
     [error, setError] = useState(""),
     [selected, setSelected] = useState<Set<string>>(new Set());
-  const [viewVault, setViewVault] = useState(main?.id ?? "");
   const anchor = useRef<string | null>(null),
     refs = useRef<Map<string, LibraryEntry>>(new Map());
-  const active = config.vaults.find((v) => v.id === viewVault) ?? main;
+  const gridVault = filter.startsWith("vault:") ? filter.slice(6) : "*";
   const grid = useLibrary(
-    active?.id,
-    expanded,
+    gridVault,
+    expanded && filter !== "settings",
     sort,
     query,
     filter === "pinned",
@@ -422,6 +439,17 @@ export function Collection({
     setExpanded(next);
     void run(() => call("main_panel", { expanded: next }));
   };
+  const showSettings = (tab: string) => {
+    openSettings(tab);
+    setFilter("settings");
+    if (!expanded) {
+      setExpanded(true);
+      void run(() => call("main_panel", { expanded: true }));
+    }
+  };
+  useEffect(() => {
+    if (settingsTab === null && filter === "settings") setFilter("all");
+  }, [settingsTab, filter]);
   const newNote = useCallback(
     () => void run(() => call("new_note", { vaultId: main?.id })),
     [run, main?.id],
@@ -458,7 +486,6 @@ export function Collection({
       else next.add(id);
       return next;
     });
-    setViewVault(id);
   };
   const openNote = (n: LibraryEntry) =>
     void run(() => call("open_note", { vaultId: n.vaultId, path: n.path }));
@@ -573,13 +600,29 @@ export function Collection({
             value={sort}
             onChange={(e) => setSort(e.target.value)}
           >
-            <option value="date">By date</option>
-            <option value="name">By name</option>
-            <option value="size">By size</option>
-            <option value="type">By type</option>
+            <option value="date">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="name">Name</option>
+            <option value="size">Size</option>
+            <option value="type">Type</option>
           </select>
         </label>
         <div className="vault-tree">
+          <VaultList
+            vault={{ id: "*", name: "Pinned notes", path: "", github: null }}
+            pinned
+            config={config}
+            open={open.has("*")}
+            sort={sort}
+            query={query}
+            selected={selected}
+            toggle={() => toggle("*")}
+            onSelect={select}
+            onOpen={openNote}
+            onDrag={drag}
+            onDrop={drop}
+            onMain={() => {}}
+          />
           {config.vaults.map((v) => (
             <VaultList
               key={v.id}
@@ -650,7 +693,7 @@ export function Collection({
                   <button
                     onClick={() => {
                       setMenu(false);
-                      openSettings("vaults");
+                      showSettings("vaults");
                     }}
                   >
                     <Github size={15} />
@@ -671,78 +714,94 @@ export function Collection({
               Sync main vault
             </button>
           )}
-          <button className="nav-item" onClick={() => openSettings("general")}>
+          <button className="nav-item" onClick={() => showSettings("general")}>
             <Settings size={17} />
             Settings
           </button>
-          <div className="vault-indicator">
-            <Pin size={12} />
-            {main?.name ?? "No main vault"}
-          </div>
         </div>
       </aside>
       {expanded && (
         <main className="collection-main">
-          <header className="main-header" data-tauri-drag-region>
-            <span className="breadcrumb">
-              <FolderOpen size={14} />
-              {active?.name ?? "Notes"}
-            </span>
-          </header>
           <div className="collection-tools">
-            <div className="tabs">
-              <button
-                className={filter === "all" ? "active" : ""}
-                onClick={() => setFilter("all")}
-              >
-                All notes
-              </button>
-              <button
-                className={filter === "pinned" ? "active" : ""}
-                onClick={() => setFilter("pinned")}
-              >
-                Pinned notes
-              </button>
+            <div
+              className="tabs"
+              role="tablist"
+              aria-label="Library tabs"
+              data-tauri-drag-region
+            >
+              {[
+                ["all", "All notes"],
+                ["pinned", "Pinned notes"],
+                ...config.vaults.map((v) => [`vault:${v.id}`, v.name]),
+                ["settings", "Settings"],
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  role="tab"
+                  aria-selected={filter === id}
+                  aria-controls="collection-pane"
+                  className={filter === id ? "active" : ""}
+                  onClick={() =>
+                    id === "settings" ? showSettings("general") : setFilter(id)
+                  }
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
-          {!active && (
-            <p className="no-results">
-              Open a folder or create a vault to begin.
-            </p>
-          )}
-          {grid.error && (
-            <div role="alert" className="error-banner">
-              {grid.error}
-            </div>
-          )}
-          <div className="notes-grid">
-            {grid.notes.map((n) => (
-              <PreviewCard
-                key={noteKey(n)}
-                note={n}
-                config={previewConfig}
-                dark={dark}
-                onOpen={() => openNote(n)}
-              />
-            ))}
-          </div>
-          <div ref={sentinel} className="load-sentinel">
-            {grid.busy && <span role="status">Loading notes…</span>}
-            {grid.notes.length < grid.total && (
-              <button
-                className="load-more"
-                disabled={grid.busy}
-                onClick={grid.more}
-              >
-                Load more notes
-              </button>
+          <div
+            id="collection-pane"
+            role="tabpanel"
+            aria-label={filter === "settings" ? "Settings" : "Notes"}
+          >
+            {filter === "settings" ? (
+              settingsContent
+            ) : (
+              <>
+                {!config.vaults.length && (
+                  <p className="no-results">
+                    Open a folder or create a vault to begin.
+                  </p>
+                )}
+                {grid.error && (
+                  <div role="alert" className="error-banner">
+                    {grid.error}
+                  </div>
+                )}
+                <div className="notes-grid">
+                  {grid.notes.map((n) => (
+                    <PreviewCard
+                      key={noteKey(n)}
+                      note={n}
+                      config={previewConfig}
+                      dark={dark}
+                      onOpen={() => openNote(n)}
+                    />
+                  ))}
+                </div>
+                <div ref={sentinel} className="load-sentinel">
+                  {grid.busy && <span role="status">Loading notes…</span>}
+                  {grid.notes.length < grid.total && (
+                    <button
+                      className="load-more"
+                      disabled={grid.busy}
+                      onClick={grid.more}
+                    >
+                      Load more notes
+                    </button>
+                  )}
+                </div>
+                {!!config.vaults.length && !grid.busy && !grid.total && (
+                  <p className="no-results">
+                    {query
+                      ? `No notes match “${query}”.`
+                      : "No notes in this tab."}
+                  </p>
+                )}
+              </>
             )}
           </div>
-          {active && !grid.busy && !grid.total && (
-            <p className="no-results">
-              {query ? `No notes match “${query}”.` : "No notes in this tab."}
-            </p>
-          )}
         </main>
       )}
     </div>

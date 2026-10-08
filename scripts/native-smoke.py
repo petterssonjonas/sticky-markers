@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         binary = (root/'package/usr/bin/sticky-markers').resolve()
     note = vault/'First.md'; note.write_text('# Packaged note\n\n')
     config = data/'settings.json'
-    config.write_text(json.dumps({'vaults':[{'id':'native','name':'Native smoke','path':str(vault),'github':None}], 'activeVault':'native', 'styles':{'native/First.md':{'open':True,'pinned':True,'pinnedAt':1,'mode':'edit','width':420,'height':440}}, 'settings':{'width':420,'height':440,'mode':'view'}}))
+    config.write_text(json.dumps({'vaults':[{'id':'native','name':'Native smoke','path':str(vault),'github':None,'defaultColor':4}], 'activeVault':'native', 'styles':{'native/First.md':{'open':True,'pinned':True,'pinnedAt':1,'mode':'edit','width':420,'height':440}}, 'settings':{'width':420,'height':440,'mode':'view'}}))
     env = os.environ.copy()
     env.update(STICKY_MARKERS_DATA_DIR=str(data), XDG_DATA_HOME=str(root/'share'), XDG_CONFIG_HOME=str(root/'config'), XDG_CACHE_HOME=str(root/'cache'), WEBKIT_DISABLE_DMABUF_RENDERER='1')
     cmd = [str(binary)]
@@ -42,8 +42,17 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         main_win = windows('Sticky Markers')[0]
         geometry = subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True,check=True).stdout
         assert 'WIDTH=300' in geometry, geometry
+        if shutil.which('xprop'):
+            hints = subprocess.run(['xprop','-id',main_win,'WM_NORMAL_HINTS'],capture_output=True,text=True,check=True).stdout
+            assert 'maximum size: 300 by' in hints and 'minimum size: 300 by 400' in hints, hints
+        subprocess.run([xdotool,'windowsize',main_win,'300','730'],check=True)
+        wait_for(lambda: 'HEIGHT=730' in subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True).stdout, 'collapsed window could not resize vertically')
         subprocess.run([xdotool,'windowraise',main_win,'windowfocus',main_win,'mousemove','--window',main_win,'245','34','click','1'],check=True)
         wait_for(lambda: 'WIDTH=1120' in subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True).stdout, 'notes panel did not expand the native window')
+        if shutil.which('xprop'):
+            hints = subprocess.run(['xprop','-id',main_win,'WM_NORMAL_HINTS'],capture_output=True,text=True,check=True).stdout
+            assert 'minimum size: 600 by 400' in hints, hints
+            assert 'maximum size: 300 by' not in hints, hints
         subprocess.run([xdotool,'mousemove','--window',main_win,'245','34','click','1'],check=True)
         wait_for(lambda: 'WIDTH=300' in subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True).stdout, 'notes panel did not collapse the native window')
         time.sleep(2)  # Let GTK/WebKit finish resize and lazy panel mount on Xvfb.
@@ -81,6 +90,8 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         subprocess.run([xdotool,'mousemove','--window',draft_win,'43','20','click','1'], check=True)
         wait_for(lambda: json.loads(config.read_text())['styles'][style_key]['pinned'], 'native pin action did not persist')
         assert json.loads(config.read_text())['styles'][style_key]['pinnedAt'] > 0
+        assert json.loads(config.read_text())['styles'][style_key]['color'] == 4, 'new note ignored vault default color'
+        assert json.loads(config.read_text())['styles']['native/First.md']['color'] == 0, 'vault default changed an existing note'
         subprocess.run([xdotool,'mousemove','--window',draft_win,'43','20','click','1'], check=True)
         wait_for(lambda: not json.loads(config.read_text())['styles'][style_key]['pinned'], 'native unpin action did not persist')
         subprocess.run([xdotool,'mousemove','--window',draft_win,'402','24','click','1'], check=True)

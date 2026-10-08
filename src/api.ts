@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   defaults,
+  defaultStyle,
   type Config,
   type Document,
   type Note,
@@ -134,23 +135,30 @@ async function demoCall<T>(
       break;
     case "library_page": {
       const q = String(args.query ?? "").toLowerCase();
-      const entries = Object.entries(files)
-        .map(
-          ([path, content], i): LibraryEntry => ({
-            vaultId: id,
-            path,
-            title: path.split("/").pop()!,
-            modified: 1700000000 - i * 3600,
-            size: new TextEncoder().encode(content).length,
-            kind: path.split(".").pop()?.toLowerCase() ?? "",
-          }),
-        )
-        .filter(
-          (n) =>
-            (n.path.toLowerCase().includes(q) ||
-              files[n.path].toLowerCase().includes(q)) &&
-            (!args.pinned || d.config.styles[`${id}/${n.path}`]?.pinned),
-        );
+      const vaults =
+        id === "*"
+          ? d.config.vaults
+          : d.config.vaults.filter((v) => v.id === id);
+      const entries = vaults.flatMap((v) => {
+        const source = v.id === "demo" ? d.files : (d.vaultFiles?.[v.id] ?? {});
+        return Object.entries(source)
+          .map(
+            ([path, content], i): LibraryEntry => ({
+              vaultId: v.id,
+              path,
+              title: path.split("/").pop()!,
+              modified: 1700000000 - i * 3600,
+              size: new TextEncoder().encode(content).length,
+              kind: path.split(".").pop()?.toLowerCase() ?? "",
+            }),
+          )
+          .filter(
+            (n) =>
+              (n.path.toLowerCase().includes(q) ||
+                source[n.path].toLowerCase().includes(q)) &&
+              (!args.pinned || d.config.styles[`${v.id}/${n.path}`]?.pinned),
+          );
+      });
       entries.sort((a, b) =>
         args.sort === "name"
           ? a.title.localeCompare(b.title)
@@ -158,7 +166,9 @@ async function demoCall<T>(
             ? b.size - a.size
             : args.sort === "type"
               ? a.kind.localeCompare(b.kind)
-              : b.modified - a.modified,
+              : args.sort === "oldest"
+                ? a.modified - b.modified
+                : b.modified - a.modified,
       );
       const offset = Number(args.offset ?? 0),
         limit = Number(args.limit ?? 24);
@@ -169,6 +179,10 @@ async function demoCall<T>(
       break;
     }
     case "main_panel":
+      break;
+    case "set_vault_defaults":
+      d.config.vaults.find((v) => v.id === id)!.defaultColor =
+        args.color == null ? null : Number(args.color);
       break;
     case "set_main_vault":
       d.config.mainVault = id;
@@ -272,13 +286,23 @@ async function demoCall<T>(
     }
     case "new_note": {
       const p = `draft-${crypto.randomUUID()}`;
-      drafts.set(p, {});
+      drafts.set(p, {
+        style: defaultStyle(
+          d.config.settings,
+          d.config.vaults.find((v) => v.id === id),
+        ),
+      });
       out = await doc(p);
       persist(d);
       navigate(id, p);
       return out as T;
     }
     case "open_note":
+      d.config.styles[`${id}/${path}`] ??= defaultStyle(
+        d.config.settings,
+        d.config.vaults.find((v) => v.id === id),
+      );
+      persist(d);
       navigate(id, path);
       if (args.heading) {
         const q = new URL(location.href);

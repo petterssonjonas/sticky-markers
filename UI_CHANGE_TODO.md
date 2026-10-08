@@ -16,4 +16,19 @@
 - [x] Classic only: yellow/orange/pink/red/purple/green/gray/blue, pastel top row and vibrant bottom row; light/dark.
 - [x] Regression, performance and native package checks; push main without release; build/installable RPM.
 
-Verification: 25 core Rust tests, 9 editor tests, 24 browser tests and 4 release tests passed. Windows cross-compilation passed. Linux RPM/DEB permissions and packaged native lifecycle checks passed. Browser timing with 2,500 notes: first 80 names in 97 ms, vault menu in 93 ms; these are local fixture measurements, not hardware-independent guarantees.
+Verification: 27 core Rust tests, 9 editor tests, 27 browser tests and 4 release tests passed. Windows cross-compilation passed. Linux RPM/DEB permissions and packaged native lifecycle checks passed. Browser timing with 2,500 notes: first 80 names in 97 ms, vault menu in 93 ms; these are local fixture measurements, not hardware-independent guarantees.
+
+## Navigation, defaults and fonts follow-up
+
+- [x] Pinned note filename group above all vaults; All/Pinned aggregate every vault.
+- [x] Note-specific colors; app default in Settings; optional per-vault defaults with inheritance.
+- [x] Vibrant swatches above pastels; no visible theme name.
+- [x] Warm grey/brown white light appearance; dark green dark appearance across the main app.
+- [x] Remove redundant settings footer, main vault footer, pane vault header and top divider.
+- [x] Collapsed width fixed at 300 px; vertical resize retained; expanded pane minimum 300 px.
+- [x] Settings in an expandable pane tab; tabs for All, Pinned and every configured vault.
+- [x] Newest/Oldest/Name/Size/Type sorting; tighter search/sort controls and legible filename cards.
+- [x] Bundle Libron 0.30, Barlow and Noto Sans offline, with licenses; font menu divider before system fonts.
+- [x] Browser, core and packaged window checks; push main and produce refreshed RPM.
+
+Follow-up validation includes bundled font loading, global/vault color inheritance and note independence, multi-vault tabs, fixed collapsed width and vertical resize, expanded minimum size, and packaged save/close/quit behavior. RPM package revision: 6.

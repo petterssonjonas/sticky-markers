@@ -78,12 +78,15 @@ test("large libraries keep closed vaults and previews lazy; menus respond prompt
   );
   await expect(page.locator(".card-bottom")).toHaveCount(0);
 });
-test("main vault directs new notes and is shown in the footer", async ({
+test("main vault directs new notes without a redundant footer", async ({
   page,
 }) => {
   await fixture(page);
   await page.getByRole("button", { name: "Set Other as main vault" }).click();
-  await expect(page.locator(".vault-indicator")).toHaveText("Other");
+  await expect(
+    page.getByRole("button", { name: "Set Other as main vault" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".vault-indicator")).toHaveCount(0);
   await page.getByRole("button", { name: "New note", exact: true }).click();
   await page.locator(".cm-content").pressSequentially("New home note");
   await page.getByRole("button", { name: "Close note to collection" }).click();
@@ -283,4 +286,173 @@ test("wikilinks resolve target files in a large linked library", async ({
   await page.goto("/?vault=demo&note=Note_0000.md");
   await page.locator(".lp-link").filter({ hasText: "Note_0001" }).click();
   await expect(page.locator(".note-drag")).toHaveText("Note_0001");
+});
+
+test("pinned navigation and tabs aggregate vaults while settings stays inside the pane", async ({
+  page,
+}) => {
+  await fixture(page, 2);
+  await page.evaluate((key) => {
+    const d = JSON.parse(localStorage.getItem(key)!);
+    d.config.styles = {
+      "demo/Note_0000.md": { pinned: true },
+      "other/existing.toml": { pinned: true },
+    };
+    localStorage.setItem(key, JSON.stringify(d));
+  }, key);
+  await page.reload();
+  await expect(page.locator(".vault-row").first()).toContainText(
+    "Pinned notes",
+  );
+  await page.getByRole("button", { name: "Expand Pinned notes" }).click();
+  const pinned = page.getByRole("listbox", { name: "Notes in Pinned notes" });
+  await expect(pinned.getByRole("option")).toHaveCount(2);
+  await expect(pinned).toContainText("existing.toml");
+  await expect(page.locator(".card-preview")).toHaveCount(0);
+  await page.getByRole("button", { name: "Open notes panel" }).click();
+  await expect(page.locator(".note-card")).toHaveCount(3);
+  await page.getByRole("tab", { name: "Primary", exact: true }).click();
+  await expect(page.locator(".note-card")).toHaveCount(2);
+  await page.getByRole("tab", { name: "Other", exact: true }).click();
+  await expect(page.locator(".note-card")).toHaveCount(1);
+  await page.getByRole("tab", { name: "Pinned notes", exact: true }).click();
+  await expect(page.locator(".note-card")).toHaveCount(2);
+  await page.getByRole("button", { name: "Close notes panel" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.locator(".panel-expanded")).toBeVisible();
+  await expect(
+    page.getByRole("tab", { name: "Settings", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".collection-main .settings-pane")).toBeVisible();
+  await expect(
+    page.locator(".modal-backdrop,.main-header,.breadcrumb,.vault-indicator"),
+  ).toHaveCount(0);
+  await expect(page.getByText("Your notes stay plain Markdown.")).toHaveCount(
+    0,
+  );
+  await page.getByRole("tab", { name: "All notes" }).click();
+  await expect(page.locator(".settings-pane")).toHaveCount(0);
+  await expect(page.locator(".note-card")).toHaveCount(3);
+});
+
+test("app and vault defaults create differently colored notes without changing existing notes", async ({
+  page,
+}) => {
+  await fixture(page, 2);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const general = page.getByRole("region", { name: "Settings", exact: true });
+  await general
+    .getByRole("group", { name: "Default note color", exact: true })
+    .getByRole("button", { name: "Yellow vibrant", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Save preferences" }).click();
+  await page.getByRole("button", { name: "Vaults & GitHub" }).click();
+  await general
+    .getByRole("group", { name: "Default color for Primary" })
+    .getByRole("button", { name: "Purple pastel" })
+    .click();
+  await expect(
+    general
+      .getByRole("group", { name: "Default color for Primary" })
+      .getByRole("button", { name: "Purple pastel" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "New note", exact: true }).click();
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Purple pastel" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".swatches button").first()).toHaveAttribute(
+    "aria-label",
+    "Yellow vibrant",
+  );
+  await expect(page.locator(".swatches button").nth(8)).toHaveAttribute(
+    "aria-label",
+    "Yellow pastel",
+  );
+  await expect(page.getByText("Classic", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Green vibrant" }).click();
+  await page.locator(".cm-content").fill("A distinct color");
+  await page.getByRole("button", { name: "Close note to collection" }).click();
+  const second = await page.context().newPage();
+  await second.goto("/?vault=demo&note=Note_0001.md");
+  await page.goto("/?vault=demo&note=A_distinct_color.md");
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  await page.getByRole("button", { name: "Blue vibrant" }).click();
+  await second.getByRole("button", { name: "Note menu", exact: true }).click();
+  await expect(
+    second.getByRole("button", { name: "Purple pastel" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  const config = await page.evaluate(
+    (key) => JSON.parse(localStorage.getItem(key)!).config,
+    key,
+  );
+  expect(config.settings.color).toBe(8);
+  expect(config.vaults[0].defaultColor).toBe(4);
+  expect(config.styles["demo/A_distinct_color.md"].color).toBe(15);
+  await second.close();
+});
+
+test("compact appearance, oldest sorting and all bundled fonts work offline", async ({
+  page,
+}) => {
+  await fixture(page);
+  await expect(page.getByLabel("Sort notes").locator("option")).toHaveText([
+    "Newest",
+    "Oldest",
+    "Name",
+    "Size",
+    "Type",
+  ]);
+  await page.getByRole("button", { name: "Expand Primary" }).click();
+  await page.getByLabel("Sort notes").selectOption("oldest");
+  await expect(page.locator(".sidebar-note-card").first()).toHaveText(
+    "Note_0002.md",
+  );
+  expect(
+    (await page.getByLabel("Search notes").boundingBox())!.height,
+  ).toBeLessThan(28);
+  expect(
+    (await page.getByLabel("Sort notes").boundingBox())!.height,
+  ).toBeLessThan(28);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const settings = page.getByRole("region", { name: "Settings", exact: true });
+  const appearance = settings.getByRole("combobox").first();
+  await appearance.selectOption("light");
+  await page.getByRole("button", { name: "Save preferences" }).click();
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-appearance",
+    "light",
+  );
+  await expect(page.locator(".sidebar")).toHaveCSS(
+    "background-color",
+    "rgb(231, 226, 218)",
+  );
+  await appearance.selectOption("dark");
+  await page.getByRole("button", { name: "Save preferences" }).click();
+  await expect(page.locator(".sidebar")).toHaveCSS(
+    "background-color",
+    "rgb(27, 32, 27)",
+  );
+  await page.goto("/?vault=demo&note=Note_0000.md");
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  const fonts = page.getByLabel("Note font", { exact: true });
+  await expect(fonts.locator(":scope > option").first()).toHaveText("Libron");
+  for (const [id, family] of [
+    ["libron", "Libron"],
+    ["barlow", "Barlow"],
+    ["noto-sans", "Noto Sans"],
+  ]) {
+    await fonts.selectOption(id);
+    await page.evaluate(async (family) => {
+      const faces = await document.fonts.load(`16px "${family}"`);
+      if (!faces.length || faces.some((face) => face.status !== "loaded"))
+        throw new Error(`Missing bundled font ${family}`);
+    }, family);
+  }
+  await expect(fonts.locator('option[value="font-divider"]')).toHaveAttribute(
+    "disabled",
+    "",
+  );
+  await expect(fonts.locator('optgroup[label="System fonts"]')).toHaveCount(1);
+  await page.screenshot({ path: "test-results/note-fonts.png" });
 });

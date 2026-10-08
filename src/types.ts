@@ -15,6 +15,7 @@ export interface Vault {
   name: string;
   path: string;
   github: SyncConfig | null;
+  defaultColor?: number | null;
 }
 export interface Settings {
   width: number;
@@ -71,15 +72,16 @@ export const defaults: Settings = {
   appearance: "system",
   palette: "classic",
   color: 0,
-  font: "sans",
+  font: "libron",
   fontSize: 16,
   githubClientId: "",
   checkUpdates: true,
   toolbarPins: [],
 };
-export function defaultStyle(settings: Settings): NoteStyle {
+export function defaultStyle(settings: Settings, vault?: Vault): NoteStyle {
   return {
     ...settings,
+    color: vault?.defaultColor ?? settings.color,
     open: false,
     pinned: false,
     pinnedAt: 0,
