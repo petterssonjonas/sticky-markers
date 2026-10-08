@@ -62,6 +62,9 @@ Validation: 31 Rust core tests, 9 editor tests, 33 browser tests and 4 release t
 - [x] Extensionless rename gets .md; explicit formats stay unchanged.
 - [x] README screenshot additions deferred at the user's request.
 - [x] Validate native rename, packaged MCP and RPM/DEB permissions.
-- [ ] Publish 0.5 Beta and verify all release assets.
+- [x] Publish 0.5 Beta; fix Windows timestamp test handles and Python 3.10 release collection.
+- [ ] Fix the Flatpak release failure and verify all published release assets.
 
-Validation: 32 Rust core tests, 9 editor tests, 36 browser tests and 4 release tests passed. Windows cross-compilation passed. The installed Linux package passed separate-window rename with automatic .md extension, save/close/quit/restore checks, MCP stdio checks and RPM/DEB payload permission checks. A sample signature verified against the embedded release public key. Version: 0.5.0; RPM revision: 1.
+Validation: 32 Rust core tests, 9 editor tests, 36 browser tests and 5 release tests passed. Windows cross-compilation passed. The installed Linux package passed separate-window rename with automatic .md extension, save/close/quit/restore checks, MCP stdio checks and RPM/DEB payload permission checks. A sample signature verified against the embedded release public key. Version: 0.5.0; RPM revision: 1.
+
+Release run 37848184716: Windows and both Mac package jobs passed. Linux RPM/DEB/AppImage collection, permissions and native lifecycle passed, but the Flatpak build failed. Asset publication is waiting on that failure's log output; the environment blocks GitHub's log-download endpoints. Only failed jobs have been retried, retaining successful platform artifacts.
