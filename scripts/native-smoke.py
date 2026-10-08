@@ -42,6 +42,16 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         main_win = windows('Sticky Markers')[0]
         geometry = subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True,check=True).stdout
         assert 'WIDTH=300' in geometry, geometry
+        origin = dict(line.split('=', 1) for line in geometry.splitlines() if '=' in line)
+        # Drag the logo text itself while the preview pane is closed.
+        subprocess.run([xdotool,'windowraise',main_win,'windowfocus',main_win,
+                        'mousemove','--window',main_win,'115','34','mousedown','1','sleep','.2',
+                        'mousemove_relative','--','30','25','sleep','.3','mouseup','1'],check=True)
+        def moved():
+            current = subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True).stdout
+            position = dict(line.split('=',1) for line in current.splitlines() if '=' in line)
+            return (position.get('X'),position.get('Y')) != (origin['X'],origin['Y'])
+        wait_for(moved, 'collapsed main window could not be dragged by its logo text')
         if shutil.which('xprop'):
             hints = subprocess.run(['xprop','-id',main_win,'WM_NORMAL_HINTS'],capture_output=True,text=True,check=True).stdout
             assert 'maximum size: 300 by' in hints and 'minimum size: 300 by 400' in hints, hints
@@ -139,12 +149,15 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         app=subprocess.Popen(cmd,env=env,stdout=log,stderr=log)
         wait_for(lambda: windows('First.md'), 'saved active note did not restore after quit')
         wait_for(lambda: windows('Sticky Markers'), 'restart did not show main window')
-        print('Native smoke passed: sidebar-first main window, repeat-launch routing, active-note restore, packaged editing, save-before-close, stay running with no windows, immediate blank files and cleanup, first-content naming, separate rename window and automatic .md extension, main/note commands, pinned desktop actions and application identity, flush-before-quit, subsequent restoration.')
+        print('Native smoke passed: draggable collapsed sidebar, sidebar-first main window, repeat-launch routing, active-note restore, packaged editing, save-before-close, stay running with no windows, immediate blank files and cleanup, first-content naming, separate rename window and automatic .md extension, main/note commands, pinned desktop actions and application identity, flush-before-quit, subsequent restoration.')
     except Exception:
         log.flush()
         print((root/'native.log').read_text(), file=sys.stderr)
         print('Note after typing:', repr(note.read_text()), file=sys.stderr)
         print('Vault files:', [p.name for p in vault.iterdir()], file=sys.stderr)
+        entry = root/'share/applications/dev.stickymarkers.desktop.desktop'
+        if entry.exists(): print('Desktop actions:', entry.read_text(), file=sys.stderr)
+        print('Settings:', config.read_text(), file=sys.stderr)
         raise
     finally:
         # Fixture processes only. Terminate the traced app before its proot parent.

@@ -9,7 +9,7 @@ if ! command -v rustup >/dev/null; then
   sh /tmp/sticky-rustup.sh -y --profile minimal --no-modify-path
 fi
 rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
-if [ ! -f /workspace/.sysroot/usr/lib/x86_64-linux-gnu/pkgconfig/webkit2gtk-4.1.pc ] || [ ! -x /workspace/.sysroot/usr/bin/rpm ] || [ ! -x /workspace/.sysroot/usr/bin/flatpak-builder ]; then
+if [ ! -f /workspace/.sysroot/usr/lib/x86_64-linux-gnu/pkgconfig/webkit2gtk-4.1.pc ] || [ ! -x /workspace/.sysroot/usr/bin/rpm ]; then
   . /etc/os-release
   [ "${VERSION_CODENAME:-}" = trixie ] || { echo 'This rootless setup targets Debian trixie; install Tauri prerequisites for this host.' >&2; exit 1; }
   mkdir -p /workspace/.sysroot/apt/{empty,lists/partial,cache/archives/partial}
@@ -29,7 +29,7 @@ DPkg::Post-Invoke {};
 CONFIG
   export APT_CONFIG=/workspace/.sysroot/apt/config
   apt-get -o Debug::NoLocking=1 update
-  apt-get --download-only -o Debug::NoLocking=1 -y install libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev patchelf libfuse2t64 rpm flatpak flatpak-builder xvfb dbus-x11 proot xdotool
+  apt-get --download-only -o Debug::NoLocking=1 -y install libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev patchelf libfuse2t64 rpm xvfb dbus-x11 proot xdotool
   for package in /workspace/.sysroot/apt/cache/archives/*.deb; do
     dpkg-deb -x "$package" /workspace/.sysroot
   done
@@ -52,6 +52,5 @@ source scripts/cloud-env.sh
 npm ci --cache /workspace/.npm
 cargo fetch --locked
 npm run check
-cargo test --locked -p sticky-core -p sticky-markers-mcp
-cargo build --locked -p sticky-markers-mcp
-python3 scripts/mcp-smoke.py
+cargo test --locked -p sticky-core
+cargo check --locked -p sticky-markers

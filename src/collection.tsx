@@ -30,6 +30,7 @@ import {
   ArrowUpRight,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { call, desktop, registerFolder } from "./api";
 import {
   mainVault,
@@ -548,7 +549,21 @@ export function Collection({
       className={`collection ${expanded ? "panel-expanded" : "sidebar-only"}`}
     >
       <aside className="sidebar">
-        <div className="brand" data-tauri-drag-region>
+        <div
+          className="brand"
+          onMouseDown={(event) => {
+            if (
+              !desktop ||
+              event.button !== 0 ||
+              (event.target as Element).closest("button, input, select, a")
+            )
+              return;
+            event.preventDefault();
+            void getCurrentWindow()
+              .startDragging()
+              .catch((e) => setError(String(e)));
+          }}
+        >
           <span className="brand-mark">
             <Leaf size={20} />
           </span>

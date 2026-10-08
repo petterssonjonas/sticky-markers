@@ -38,16 +38,11 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: cargo fmt --all --check
-      - run: cargo test --locked -p sticky-core -p sticky-markers-mcp
-      - run: cargo build --locked -p sticky-markers-mcp
-      - run: python scripts/mcp-smoke.py
-        if: runner.os != 'Windows'
-      - run: python scripts/mcp-smoke.py target/debug/sticky-markers-mcp.exe
-        if: runner.os == 'Windows'
+      - run: cargo test --locked -p sticky-core
       - name: Browser workflows
         if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium && npm run test:e2e
-      - name: Build installers and bundled MCP
+      - name: Build installers
         run: npm run package
         env:
           STICKY_GITHUB_CLIENT_ID: ${{ vars.STICKY_GITHUB_CLIENT_ID }}
@@ -63,5 +58,4 @@ jobs:
           name: sticky-markers-${{ runner.os }}
           path: |
             target/release/bundle/
-            target/release/sticky-markers-mcp*
           if-no-files-found: error

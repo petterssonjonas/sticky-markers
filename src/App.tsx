@@ -38,7 +38,6 @@ import {
   Ellipsis,
   Download,
   Upload,
-  Copy,
   Pin,
   List,
   Heading,
@@ -1128,7 +1127,6 @@ function SettingsDialog({
         {[
           ["general", "Notes & appearance"],
           ["vaults", "Vaults & GitHub"],
-          ["mcp", "MCP access"],
           ["updates", "Updates"],
         ].map(([id, label]) => (
           <button
@@ -1605,78 +1603,6 @@ function SettingsDialog({
                 </small>
               </div>
             )}
-          </>
-        )}
-        {tab === "mcp" && (
-          <>
-            <h3>A note from anywhere you work.</h3>
-            <p className="settings-help">
-              Connect a local MCP harness to create, read, and edit notes.
-              Dictation works if your harness supports it. The desktop app can
-              be closed.
-            </p>
-            <p className="settings-help">
-              Grant each vault explicitly. The server never pushes or pulls
-              externally managed repositories.
-            </p>
-            {config.vaults.map((v) => (
-              <div className="mcp-vault" key={v.id}>
-                <strong>{v.name}</strong>
-                <code>{v.id}</code>
-              </div>
-            ))}
-            <pre className="config-code">
-              {JSON.stringify(
-                {
-                  mcpServers: {
-                    "sticky-markers": {
-                      command: "sticky-markers-mcp",
-                      args: config.vaults
-                        .slice(0, 1)
-                        .flatMap((v) => ["--vault", v.id]),
-                    },
-                  },
-                },
-                null,
-                2,
-              )}
-            </pre>
-            <button
-              className="secondary"
-              onClick={() =>
-                void navigator.clipboard
-                  .writeText(
-                    JSON.stringify(
-                      {
-                        mcpServers: {
-                          "sticky-markers": {
-                            command: "sticky-markers-mcp",
-                            args: config.vaults
-                              .slice(0, 1)
-                              .flatMap((v) => ["--vault", v.id]),
-                          },
-                        },
-                      },
-                      null,
-                      2,
-                    ),
-                  )
-                  .then(() =>
-                    setMessage(
-                      "MCP configuration copied. Use the installed executable’s full path.",
-                    ),
-                  )
-                  .catch((e) => setError(String(e)))
-              }
-            >
-              <Copy size={15} />
-              Copy configuration
-            </button>
-            <p className="settings-help">
-              Use the full path to the installed MCP executable. Add --read-only
-              for a read-only connection. Cloud-only harnesses need an
-              authenticated bridge; this release uses local stdio.
-            </p>
           </>
         )}
       </div>

@@ -45,7 +45,7 @@ def collect(v,platform,arch,out):
 
 def manifest(v,out,notes=''):
     platforms={}
-    for system,arch,ext in [('linux','x86_64','AppImage'),('darwin','x86_64','app.tar.gz'),('darwin','aarch64','app.tar.gz'),('windows','x86_64','exe'),('linux-flatpak','x86_64','flatpak')]:
+    for system,arch,ext in [('linux','x86_64','AppImage'),('darwin','x86_64','app.tar.gz'),('darwin','aarch64','app.tar.gz'),('windows','x86_64','exe')]:
         name=artifact_name(v,system,arch,ext);asset=out/name;sig=out/(name+'.sig')
         if not asset.is_file() or not sig.is_file():raise ValueError(f'Missing signed release asset: {name}')
         platforms[f'{system}-{arch}']={'signature':sig.read_text().strip(),'url':f'https://github.com/{REPOSITORY}/releases/download/v{v}/{urllib.parse.quote(name)}'}

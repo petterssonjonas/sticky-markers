@@ -1,6 +1,5 @@
 {
   "bundle": {
-    "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/sticky-markers-mcp"]
+    "createUpdaterArtifacts": true
   }
 }

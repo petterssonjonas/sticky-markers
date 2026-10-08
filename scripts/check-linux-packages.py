@@ -9,7 +9,6 @@ import tarfile
 
 REQUIRED = {
     "usr/bin/sticky-markers": 0o755,
-    "usr/bin/sticky-markers-mcp": 0o755,
     "usr/share/applications/Sticky Markers.desktop": 0o644,
     "usr/share/applications/dev.stickymarkers.desktop.desktop": 0o644,
     "usr/share/icons/hicolor/128x128/apps/sticky-markers.png": 0o644,
@@ -35,6 +34,9 @@ def verify(package):
                      for m in archive.getmembers() if m.isfile()}
     else:
         raise ValueError(f"Expected an RPM or DEB: {package}")
+    binaries = {name for name in files if name.startswith("usr/bin/")}
+    if binaries != {"usr/bin/sticky-markers"}:
+        raise ValueError(f"{package.name}: unexpected installed executables: {sorted(binaries)}")
     for name, expected in REQUIRED.items():
         if name not in files:
             raise ValueError(f"{package.name}: missing {name}")

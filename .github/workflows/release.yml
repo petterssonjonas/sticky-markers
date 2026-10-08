@@ -66,12 +66,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Linux package prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev patchelf libfuse2 rpm flatpak flatpak-builder xvfb xdotool dbus-x11
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev patchelf libfuse2 rpm xvfb xdotool dbus-x11
       - run: npm ci
       - run: npm run check
       - run: npm test
-      - run: cargo test --locked -p sticky-core -p sticky-markers-mcp
-      - name: Build MCP and signed desktop installers
+      - run: cargo test --locked -p sticky-core
+      - name: Build signed desktop installers
         shell: bash
         env:
           STICKY_BUILD_TARGET: ${{ matrix.target }}
@@ -81,7 +81,7 @@ jobs:
           BUNDLES: ${{ matrix.bundles }}
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |
-          node scripts/prepare-mcp.mjs
+          rm -rf "target/$STICKY_BUILD_TARGET/release/bundle" target/release/bundle
           npm run tauri -- build --target "$STICKY_BUILD_TARGET" --bundles "$BUNDLES" --config src-tauri/tauri.release.conf.json
       - name: Normalize Cargo target directory
         shell: bash
@@ -89,6 +89,7 @@ jobs:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
           mkdir -p target/release
+          rm -rf target/release/bundle
           cp -R "target/$BUILD_TARGET/release/bundle" target/release/bundle
       - name: Collect native assets
         shell: bash
@@ -103,27 +104,6 @@ jobs:
       - name: Native Linux installer smoke
         if: runner.os == 'Linux'
         run: xvfb-run -a dbus-run-session -- python3 scripts/native-smoke.py
-      - name: Build Flatpak
-        if: runner.os == 'Linux'
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y flathub org.gnome.Platform//49 org.gnome.Sdk//49
-          python3 scripts/prepare-flatpak.py
-          cd packaging/flatpak
-          flatpak-builder --force-clean --repo=repo build dev.stickymarkers.desktop.json
-          flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo repo "../../release-assets/sticky-markers-${RELEASE_TAG#v}-linux-flatpak-x86_64.flatpak" dev.stickymarkers.desktop
-          cd ../..
-          npx tauri signer sign --app-version "${RELEASE_TAG#v}" "release-assets/sticky-markers-${RELEASE_TAG#v}-linux-flatpak-x86_64.flatpak"
-      - name: Verify Flatpak library dependencies
-        if: runner.os == 'Linux'
-        run: |
-          flatpak install --user --noninteractive release-assets/*.flatpak
-          flatpak run --command=sh dev.stickymarkers.desktop -c 'ldd /app/bin/sticky-markers > /tmp/sticky-libraries; cat /tmp/sticky-libraries; ! grep -q "not found" /tmp/sticky-libraries'
-          xvfb-run -a dbus-run-session -- python3 scripts/native-smoke.py scripts/flatpak-smoke.sh
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}

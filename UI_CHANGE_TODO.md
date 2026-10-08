@@ -50,7 +50,7 @@ Follow-up validation includes bundled font loading, global/vault color inheritan
 - [x] Triple-click selects only the clicked source row, excludes newline and next rendered row.
 - [x] Final packaged native checks, push main and refreshed RPM revision 7.
 
-Validation: 31 Rust core tests, 9 editor tests, 33 browser tests and 4 release tests passed. The final spacing adjustment passed targeted layout/font/six-column checks. Windows cross-compilation, packaged MCP stdio checks, RPM/DEB payload permissions, and native Linux close/save/blank cleanup/quit/restore checks passed. RPM package revision: 7.
+Validation: 31 Rust core tests, 9 editor tests, 33 browser tests and 4 release tests passed. The final spacing adjustment passed targeted layout/font/six-column checks. Windows cross-compilation, RPM/DEB payload permissions, and native Linux close/save/blank cleanup/quit/restore checks passed. RPM package revision: 7.
 
 
 ## 0.5 beta
@@ -61,10 +61,22 @@ Validation: 31 Rust core tests, 9 editor tests, 33 browser tests and 4 release t
 - [x] Separate titled Rename note... window; save before opening, cancel safely, reject collisions.
 - [x] Extensionless rename gets .md; explicit formats stay unchanged.
 - [x] README screenshot additions deferred at the user's request.
-- [x] Validate native rename, packaged MCP and RPM/DEB permissions.
+- [x] Validate native rename, RPM/DEB permissions.
 - [x] Publish 0.5 Beta; fix Windows timestamp test handles and Python 3.10 release collection.
-- [ ] Fix the Flatpak release failure and verify all published release assets.
+- [x] Remove the Flatpak blocker from the 0.6 release pipeline.
 
-Validation: 32 Rust core tests, 9 editor tests, 36 browser tests and 5 release tests passed. Windows cross-compilation passed. The installed Linux package passed separate-window rename with automatic .md extension, save/close/quit/restore checks, MCP stdio checks and RPM/DEB payload permission checks. A sample signature verified against the embedded release public key. Version: 0.5.0; RPM revision: 1.
+Validation: 32 Rust core tests, 9 editor tests, 36 browser tests and 5 release tests passed. Windows cross-compilation passed. The installed Linux package passed separate-window rename with automatic .md extension, save/close/quit/restore checks, RPM/DEB payload permission checks. A sample signature verified against the embedded release public key. Version: 0.5.0; RPM revision: 1.
 
-Release run 37848184716: Windows and both Mac package jobs passed. Linux RPM/DEB/AppImage collection, permissions and native lifecycle passed, but the Flatpak build failed. Asset publication is waiting on that failure's log output; the environment blocks GitHub's log-download endpoints. Only failed jobs have been retried, retaining successful platform artifacts.
+Release run 37848184716: Windows and both Mac package jobs passed. Linux RPM/DEB/AppImage collection, permissions and native lifecycle passed, but the Flatpak build failed. The 0.5 release has no attached packages because the Flatpak failure blocked publication; 0.6 omits that build. Only failed jobs have been retried, retaining successful platform artifacts.
+
+## 0.6 beta
+
+- [x] Main header drags from logo/text with the preview pane closed; header buttons remain clickable.
+- [x] Compact dropdowns use standard CSS appearance, consistent line height and text padding.
+- [x] Remove the separate server, settings tab, protocol dependencies, sidecar packaging and documentation references.
+- [x] Add skills/write-vault-note/SKILL.md for writing ordinary Markdown files in a vault directory.
+- [x] Omit Flatpak from release jobs, required signed targets and release documentation.
+- [x] Validate native dragging and fresh package contents.
+- [ ] Verify every published 0.6 release asset.
+
+Validation: 32 core Rust tests, 9 editor tests, 37 browser tests and 5 release tests passed. Windows cross-compilation passed. Fresh 0.6 RPM/DEB payloads contain only the desktop executable with correct executable, icon and launcher permissions. Native lifecycle checks include dragging the collapsed main window by its logo text, editing, renaming, pinned launcher actions, close/quit saves and restoration.

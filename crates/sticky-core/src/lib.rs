@@ -581,7 +581,7 @@ impl Core {
         request: Option<&str>,
     ) -> Result<Document> {
         validate_content(content)?;
-        // Serialize automatic naming across app/MCP processes. Never overwrite a collision.
+        // Serialize automatic naming across app processes. Never overwrite a collision.
         let _names = self.lock(&format!("new-name:{id}"))?;
         let fingerprint = revision(format!("create:{id}:{path:?}:{content}").as_bytes());
         let _req = self.lock(&format!(

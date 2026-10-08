@@ -10,6 +10,40 @@ async function openPanel(page: import("@playwright/test").Page) {
   });
   if (await button.isVisible()) await button.click();
 }
+test("compact dropdowns leave room for text in the library, settings and note menu", async ({
+  page,
+}) => {
+  const checkDropdowns = async () => {
+    for (const select of await page.locator("select:visible").all()) {
+      const metrics = await select.evaluate((node) => {
+        const style = getComputedStyle(node);
+        const context = document.createElement("canvas").getContext("2d")!;
+        context.font = `${style.fontSize} ${style.fontFamily}`;
+        const text = context.measureText(
+          "Agyp " + (node as HTMLSelectElement).selectedOptions[0]?.text,
+        );
+        return {
+          appearance: style.appearance,
+          usable:
+            node.clientHeight -
+            parseFloat(style.paddingTop) -
+            parseFloat(style.paddingBottom),
+          textHeight: text.fontBoundingBoxAscent + text.fontBoundingBoxDescent,
+        };
+      });
+      expect(metrics.appearance).toBe("none");
+      expect(metrics.usable).toBeGreaterThanOrEqual(metrics.textHeight);
+    }
+  };
+  await page.goto("/");
+  await checkDropdowns();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await checkDropdowns();
+  await page.getByRole("tab", { name: "All notes", exact: true }).click();
+  await page.locator(".note-card").first().click();
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  await checkDropdowns();
+});
 test("collection search, edit, save, close and reopen", async ({ page }) => {
   await page.goto("/");
   await openPanel(page);
@@ -65,9 +99,7 @@ test("Mermaid renders", async ({ page }) => {
   await page.locator(".note-card").click();
   await expect(page.locator(".mermaid svg")).toBeVisible({ timeout: 20000 });
 });
-test("settings, theme and MCP configuration are accessible", async ({
-  page,
-}) => {
+test("settings and appearance are accessible", async ({ page }) => {
   await page.goto("/");
   await openPanel(page);
   await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -78,8 +110,11 @@ test("settings, theme and MCP configuration are accessible", async ({
     .selectOption("dark");
   await page.getByRole("button", { name: "Save preferences" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-appearance", "dark");
-  await page.getByRole("button", { name: "MCP access" }).click();
-  await expect(page.locator(".config-code")).toContainText("--vault");
+  await expect(page.locator(".settings-tabs button")).toHaveText([
+    "Notes & appearance",
+    "Vaults & GitHub",
+    "Updates",
+  ]);
 });
 test("Markdown rendering is safe and editing preserves CRLF frontmatter", async ({
   page,

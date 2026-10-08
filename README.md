@@ -23,9 +23,9 @@ The main window starts as a compact, fixed-width navigator that can be resized v
 
 Local folders and existing Git/Obsidian vaults work without an account. Existing repositories are **externally managed**: the app never stages, commits, pulls, pushes, or changes their Git configuration. Obsidian synchronization remains the user's responsibility.
 
-The Rust core is shared by the desktop application and MCP server. Saves use temporary files, atomic replacement, revision checks, and cross-process locks. Stale edits are rejected and retained in recovery instead of silently replacing newer content. Dirty buffers are journaled while typing. Clean open notes reload external edits; conflicting dirty notes offer a recovery copy and explicit reload.
+The desktop application uses a Rust file core. Saves use temporary files, atomic replacement, revision checks, and cross-process locks. Stale edits are rejected and retained in recovery instead of silently replacing newer content. Dirty buffers are journaled while typing. Clean open notes reload external edits; conflicting dirty notes offer a recovery copy and explicit reload.
 
-Settings, window geometry, request receipts, and recovery copies live outside vaults in the OS local application-data folder under `sticky-markers`. **Settings → Open local recovery copies** opens it. There are up to 30 snapshots per note; completed MCP request receipts retain up to 512 requests/32 MiB. Retries beyond this retention window require rereading the note. Delete uses OS Trash, falling back to a recovery copy if Trash is unavailable. Back up your vault using your preferred system; recovery is local and bounded.
+Settings, window geometry, and recovery copies live outside vaults in the OS local application-data folder under `sticky-markers`. **Settings → Open local recovery copies** opens it. There are up to 30 snapshots per note. Delete uses OS Trash, falling back to a recovery copy if Trash is unavailable. Back up your vault using your preferred system; recovery is local and bounded.
 
 `STICKY_MARKERS_DATA_DIR` overrides application-data location for isolated testing. UTF-8 text editing is limited to 100 KiB per file, attachments to 20 MiB. Hidden folders, symlink paths, and unsafe filenames are excluded. Frontmatter and CRLF are preserved; rename does not rewrite other notes' links. Renaming opens a separate **Rename note...** window, adds `.md` to names without an extension and preserves explicit extensions.
 
@@ -39,30 +39,9 @@ Sync verifies repository identity and privacy, compares local and remote revisio
 
 Sync includes UTF-8 text notes and PNG/JPEG/GIF/WebP/SVG/PDF attachments; per-device settings and `.obsidian` are not synced. Whole-file conflicts require resolution even when edits affect different lines. The desktop must be running for scheduled uploads. Live GitHub authorization requires the OAuth registration above; mock API tests cover sync behavior, but an account-based end-to-end test has not been run in this workspace.
 
-## MCP
+## Write notes from an assistant
 
-The separate `sticky-markers-mcp` executable provides a **local stdio MCP server**. Register vaults in the desktop first, then copy the configuration and IDs from **Settings → MCP access**. Choose the installed MCP executable's absolute path for your harness:
-
-```json
-{
-  "mcpServers": {
-    "sticky-markers": {
-      "command": "/absolute/path/to/sticky-markers-mcp",
-      "args": ["--vault", "YOUR_VAULT_ID"]
-    }
-  }
-}
-```
-
-Repeat `--vault ID` to grant multiple vaults. No vault access is granted by default. Add `--read-only` for read/search access only. `--data-dir PATH` selects the same application-data directory as an isolated desktop instance.
-
-Tools: `list_vaults`, `list_notes`, `search_notes`, `read_note`, `create_note`, `update_note`, and `append_note`. Writes use unique request IDs; edits and appends require the revision returned by a read. Reusing an ID for different content fails. Confirmation means persisted locally, not uploaded to GitHub. Speech recognition belongs to the harness, which passes its transcription to create/append. This server does not expose unauthenticated HTTP or implement remote MCP hosting.
-
-The MCP executable is bundled beside the installed desktop binary (inside `Contents/MacOS` on macOS). It also builds independently:
-
-```sh
-cargo build --locked --release -p sticky-markers-mcp
-```
+Give your assistant the vault directory and ask it to save your text as a Markdown file there. The app reads the same ordinary files; no app connection or separate service is needed. The [write-vault-note skill](skills/write-vault-note/SKILL.md) contains the complete instructions and can be installed in a harness that supports skills.
 
 ## Development and packages
 
@@ -81,14 +60,13 @@ npm run desktop
 npm run package
 ```
 
-This builds the release MCP executable and native installer for the current platform. Outputs are under `target/release/bundle`. For a Linux Debian package only:
+This builds the native installer for the current platform. Outputs are under `target/release/bundle`. For a Linux Debian package only:
 
 ```sh
-node scripts/prepare-mcp.mjs
-npm run tauri -- build --bundles deb --config src-tauri/tauri.package.conf.json
+npm run tauri -- build --bundles deb
 ```
 
-Release packaging and read-only in-app update checks are configured in [RELEASE.md](RELEASE.md). Publishing a matching versioned GitHub release builds AppImage, RPM, DEB, Flatpak, Arch packaging, DMG, EXE, and source archives. Ordinary pushes run CI but do not create releases. Update checks show release notes and a package link; install the same format you originally used. The app does not download or install updates. Release artifact signing needs the one-time setup described there. Apple notarization and Windows Authenticode signing still require their separate credentials.
+Release packaging and read-only in-app update checks are configured in [RELEASE.md](RELEASE.md). Publishing a matching versioned GitHub release builds AppImage, RPM, DEB, Arch packaging, DMG, EXE, and source archives. Ordinary pushes run CI but do not create releases. Update checks show release notes and a package link; install the same format you originally used. The app does not download or install updates. Release artifact signing needs the one-time setup described there. Apple notarization and Windows Authenticode signing still require their separate credentials.
 
 Use the `npm run tauri --` wrapper for packaging: it sets a packaging umask of `022`, and the pre-bundle hook sets executable modes to `0755` and icon modes to `0644`. Linux CI and release builds inspect the RPM/DEB payloads with `python3 scripts/check-linux-packages.py` so root-owned installations remain accessible to ordinary users.
 
@@ -100,18 +78,17 @@ npm test
 npx playwright install chromium
 npm run test:e2e
 cargo fmt --all --check
-cargo test --locked -p sticky-core -p sticky-markers-mcp
+cargo test --locked -p sticky-core
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --locked -p sticky-markers-mcp
-python3 scripts/mcp-smoke.py
+cargo build --locked
 ```
 
-Set `CHROMIUM_PATH=/usr/bin/chromium` to use an already installed browser. Tests cover concurrent/stale writes, exact byte round trips, interrupted request acknowledgement, scope/path enforcement, protected external repositories, non-force sync, conflict copies, editor formatting, and browser workflows. The extracted Linux installer passed native checks for active-note restoration, typing/save/close, remaining alive with every note closed, repeat-launch main-window activation, main/recent-note commands, and desktop actions. The bundled MCP executable also passed the stdio smoke test. Windows cross-compilation was checked; macOS and Windows native behavior still require their CI and desktop runs.
+Set `CHROMIUM_PATH=/usr/bin/chromium` to use an already installed browser. Tests cover concurrent/stale writes, exact byte round trips, interrupted request acknowledgement, scope/path enforcement, protected external repositories, non-force sync, conflict copies, editor formatting, and browser workflows. The extracted Linux installer passed native checks for active-note restoration, typing/save/close, remaining alive with every note closed, repeat-launch main-window activation, main/recent-note commands, and desktop actions. Windows cross-compilation was checked; macOS and Windows native behavior still require their CI and desktop runs.
 
 ## Cloud workspace
 
 Source `scripts/cloud-env.sh` to use the tools and Debian libraries installed under `/workspace` without root. `scripts/setup-cloud.sh` recreates the development setup on this Debian cloud host. Linux WebKit subprocesses in that rootless sysroot need the `proot` bind described in `scripts/start-cloud-desktop.sh`; ordinary desktop installations do not need it.
 
-The original design is in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md); the current UI requirements and verification checklist are in [UI_CHANGE_TODO.md](UI_CHANGE_TODO.md). Library discovery uses a cached metadata index with paginated results, small file-prefix checks, and lazy previews. Open lists periodically refresh to detect externally managed changes. Attachment insertion, full Obsidian plugin rendering, remote MCP transport, and platform code-signing/notarization remain follow-up work.
+The original design is in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md); the current UI requirements and verification checklist are in [UI_CHANGE_TODO.md](UI_CHANGE_TODO.md). Library discovery uses a cached metadata index with paginated results, small file-prefix checks, and lazy previews. Open lists periodically refresh to detect externally managed changes. Attachment insertion, full Obsidian plugin rendering, platform code-signing/notarization remain follow-up work.
 
 GPL-3.0-only; see [LICENSE](LICENSE).

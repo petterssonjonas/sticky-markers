@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,7 +11,8 @@ if (process.platform !== "win32") {
   if (target) directories.push(join(targetDir, target, profile));
   let found = false;
   for (const directory of directories) {
-    for (const name of ["sticky-markers", "sticky-markers-mcp"]) {
+    rmSync(join(directory, "bundle"), { recursive: true, force: true });
+    for (const name of ["sticky-markers"]) {
       const binary = join(directory, name);
       if (existsSync(binary)) {
         chmodSync(binary, 0o755);
@@ -20,12 +21,6 @@ if (process.platform !== "win32") {
     }
   }
   if (!found) throw new Error("Built desktop executable not found before bundling");
-  const sidecars = join(root, "src-tauri/binaries");
-  if (existsSync(sidecars)) {
-    for (const name of readdirSync(sidecars)) {
-      if (name.startsWith("sticky-markers-mcp-")) chmodSync(join(sidecars, name), 0o755);
-    }
-  }
   chmodSync(join(root, "packaging/linux/dev.stickymarkers.desktop.desktop"), 0o644);
   const icons = join(root, "src-tauri/icons");
   for (const name of readdirSync(icons)) chmodSync(join(icons, name), 0o644);

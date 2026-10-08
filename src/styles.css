@@ -1142,25 +1142,6 @@ hr {
   color: #a65b47;
   font-size: 11px;
 }
-.mcp-vault {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 13px 0;
-  font-size: 12px;
-}
-.mcp-vault code {
-  font-size: 10px;
-  color: var(--muted);
-}
-.config-code {
-  background: var(--sidebar);
-  padding: 15px;
-  font-size: 11px;
-  border-radius: 7px;
-  overflow: auto;
-  line-height: 1.7;
-}
 .hljs-keyword,
 .hljs-selector-tag {
   color: #9b3c55;
@@ -1515,3 +1496,19 @@ hr {
 .rename-window small { color: var(--muted); font-size: 11px; }
 .rename-window .action-row { justify-content: flex-end; margin: 0; }
 .rename-window .error-text { margin: 0; }
+
+/* Avoid native select bevels clipping text inside compact controls. */
+select,
+.collection .sidebar-sort select,
+.settings-pane .setting-row select,
+.note-menu .font-controls select {
+  appearance: none;
+  -webkit-appearance: none;
+  line-height: 1.25;
+  padding: 0 28px 0 8px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%23808b76' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px;
+}
+.brand { user-select: none; }
