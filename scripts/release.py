@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
 """Assemble deterministic release assets and the Tauri update feed. No publishing here."""
-import argparse, datetime, hashlib, io, json, pathlib, re, shutil, subprocess, tarfile, tomllib, urllib.parse
+import argparse, datetime, hashlib, io, json, pathlib, re, shutil, subprocess, tarfile, urllib.parse
 ROOT=pathlib.Path(__file__).resolve().parent.parent
 REPOSITORY='petterssonjonas/sticky-markers'
+
+def workspace_version(contents):
+    """Read the workspace's quoted version without requiring Python 3.11's tomllib.
+    This deliberately reads only our version field, not arbitrary TOML values.
+    """
+    section=''
+    for line in contents.splitlines():
+        header=re.fullmatch(r'\s*\[([^\]]+)\]\s*(?:#.*)?',line)
+        if header:section=header[1]
+        if section=='workspace.package':
+            match=re.fullmatch(r'''\s*version\s*=\s*(['"])([^'"]+)\1\s*(?:#.*)?''',line)
+            if match:return match[2]
+    raise ValueError('Cargo.toml must declare a quoted [workspace.package] version')
 
 def version(tag):
     if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?',tag):raise ValueError('Release tag must be vMAJOR.MINOR.PATCH (optional prerelease suffix)')
     result=tag[1:]
-    values=[json.loads((ROOT/'package.json').read_text())['version'],json.loads((ROOT/'src-tauri/tauri.conf.json').read_text())['version'],tomllib.loads((ROOT/'Cargo.toml').read_text())['workspace']['package']['version']]
+    values=[json.loads((ROOT/'package.json').read_text())['version'],json.loads((ROOT/'src-tauri/tauri.conf.json').read_text())['version'],workspace_version((ROOT/'Cargo.toml').read_text())]
     if any(v!=result for v in values):raise ValueError(f'Tag {tag} differs from application versions {values}; bump versions before publishing the release')
     return result
 

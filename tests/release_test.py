@@ -1,6 +1,10 @@
 import importlib.util, json, pathlib, tempfile, unittest
 spec=importlib.util.spec_from_file_location('release',pathlib.Path(__file__).resolve().parents[1]/'scripts/release.py');release=importlib.util.module_from_spec(spec);spec.loader.exec_module(release)
 class ReleaseTests(unittest.TestCase):
+    def test_workspace_version_is_scoped_and_needs_no_python_311_modules(self):
+        contents='[dependencies]\nversion = "9.9.9"\n[workspace.package]\nversion = \'0.5.0\' # beta\n[profile.release]\nversion = "8.8.8"\n'
+        self.assertEqual(release.workspace_version(contents),'0.5.0')
+        with self.assertRaises(ValueError):release.workspace_version('[dependencies]\nversion = "0.5.0"')
     def test_missing_target_or_signature_prevents_publication(self):
         with tempfile.TemporaryDirectory() as t:
             out=pathlib.Path(t)
