@@ -1,3 +1,4 @@
+import { VaultIcon } from "./preferences";
 import {
   useCallback,
   useEffect,
@@ -305,7 +306,7 @@ function VaultList({
           onClick={toggle}
         >
           <ChevronRight size={15} className={open ? "expanded" : ""} />
-          {pinned ? <Pin size={16} /> : <FolderOpen size={16} />}
+          {pinned ? <Pin size={16} /> : <VaultIcon vault={vault} />}
           <span>{vault.name}</span>
           {open && <small>{page.total}</small>}
         </button>
@@ -676,7 +677,7 @@ export function Collection({
                     }}
                   >
                     <FolderOpen size={15} />
-                    Open folder/vault
+                    Open a vault…
                   </button>
                   <button
                     disabled={!main}
@@ -745,6 +746,14 @@ export function Collection({
                     id === "settings" ? showSettings("general") : setFilter(id)
                   }
                 >
+                  {id === "pinned" && <Pin size={14} />}
+                  {id === "settings" && <Settings size={14} />}
+                  {id.startsWith("vault:") && (
+                    <VaultIcon
+                      vault={config.vaults.find((v) => `vault:${v.id}` === id)!}
+                      size={14}
+                    />
+                  )}
                   {label}
                 </button>
               ))}

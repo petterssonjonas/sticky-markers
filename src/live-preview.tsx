@@ -263,11 +263,60 @@ export function activeLines(
   const active: number[] = [];
   lines.forEach((line, i) => {
     const end = offset + line.length;
-    if (selection.to >= offset && selection.from <= end) active.push(i + 1);
+    if (
+      (selection.from === selection.to
+        ? selection.to >= offset
+        : selection.to > offset) &&
+      selection.from <= end
+    )
+      active.push(i + 1);
     offset = end + 1;
   });
   return active;
 }
+/** Triple-click selects source text on this logical row, excluding its newline. */
+export const rowMouseSelection: Extension = Prec.highest(
+  EditorView.mouseSelectionStyle.of((view, event) => {
+    if (
+      event.detail !== 3 ||
+      (event.target as HTMLElement).closest(".lp-table")
+    )
+      return null;
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (pos === null) return null;
+    const line = view.state.doc.lineAt(pos);
+    let start = line.from,
+      end = line.to;
+    const original = view.state.selection;
+    return {
+      get(current, extend, multiple) {
+        const pos =
+          current === event
+            ? start
+            : view.posAtCoords({ x: current.clientX, y: current.clientY });
+        const target = view.state.doc.lineAt(pos ?? start);
+        const range =
+          target.from < start
+            ? EditorSelection.range(end, target.from)
+            : EditorSelection.range(start, target.to);
+        if (extend)
+          return EditorSelection.single(original.main.anchor, range.head);
+        return multiple
+          ? EditorSelection.create(
+              [...original.ranges, range],
+              original.ranges.length,
+            )
+          : EditorSelection.create([range]);
+      },
+      update(update) {
+        if (update.docChanged) {
+          start = update.changes.mapPos(start);
+          end = update.changes.mapPos(end);
+        }
+      },
+    };
+  }),
+);
 export function livePreview(options: PreviewOptions): Extension {
   const decorate = (
     state: EditorState,

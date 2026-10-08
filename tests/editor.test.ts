@@ -69,5 +69,7 @@ describe("line-level preview", () => {
     expect(activeLines(source, { from: 10, to: 10 }, true)).toEqual([2]);
     expect(activeLines(source, { from: 2, to: 12 }, true)).toEqual([1, 2]);
     expect(activeLines(source, { from: 10, to: 10 }, false)).toEqual([]);
+    expect(activeLines(source, { from: 0, to: 8 }, true)).toEqual([1]);
+    expect(activeLines(source, { from: 8, to: 8 }, true)).toEqual([2]);
   });
 });

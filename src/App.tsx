@@ -58,7 +58,12 @@ import {
   mainVault,
 } from "./types";
 import { colors, fonts } from "./palettes";
-import { ColorSwatches, FontOptions } from "./preferences";
+import {
+  ColorSwatches,
+  ColorDropdown,
+  VaultIcon,
+  FontOptions,
+} from "./preferences";
 import { Collection } from "./collection";
 import { UpdateNotice, UpdatePanel } from "./updates";
 import { type EditorHandle } from "./editor";
@@ -202,7 +207,11 @@ export default function App() {
               settingsTab ? (
                 <SettingsDialog
                   config={config}
-                  close={() => setSettingsTab(null)}
+                  onAppearance={(appearance) =>
+                    setConfig((c) =>
+                      c ? { ...c, settings: { ...c.settings, appearance } } : c,
+                    )
+                  }
                   refresh={refresh}
                   initialTab={settingsTab}
                 />
@@ -330,13 +339,14 @@ function NoteWindow({
   useEffect(() => {
     let live = true;
     call<Document>("read_note", { vaultId, path })
-      .then((d) => {
+      .then(async (d) => {
+        const freshConfig = await call<Config>("bootstrap");
         if (live) {
           saved.current = d;
           current.current = d.content;
           setDocument(d);
           setText(d.content);
-          const persistedStyle = config.styles[`${vaultId}/${d.path}`];
+          const persistedStyle = freshConfig.styles[`${vaultId}/${d.path}`];
           if (persistedStyle) setStyle(persistedStyle);
           else if (
             !/\.(md|markdown|mdown)$/i.test(d.path) &&
@@ -367,6 +377,7 @@ function NoteWindow({
       setFinishing(true);
       editor.current?.setReadOnly(true);
       void flush()
+        .then(() => call("cleanup_new_note", { vaultId, path }))
         .then(() =>
           call("quit_ready", { label: getCurrentWindow().label, ok: true }),
         )
@@ -622,7 +633,8 @@ function NoteWindow({
           data-tauri-drag-region
           title={`${vault?.name} / ${actualPath}`}
         >
-          {actualPath.startsWith("draft-")
+          {actualPath.startsWith("draft-") ||
+          (style.provisional && !document?.content.trim())
             ? "New note"
             : actualPath
                 .split("/")
@@ -661,6 +673,15 @@ function NoteWindow({
                 )}
               </div>
             ))}
+          {toolbarPins.includes("delete") && (
+            <Button
+              label="Delete note"
+              className="danger"
+              onClick={() => void remove()}
+            >
+              <Trash2 size={15} />
+            </Button>
+          )}
         </div>
         <Button label="Note menu" onClick={() => setMenu(!menu)}>
           <Menu size={19} />
@@ -830,13 +851,71 @@ function NoteWindow({
             >
               Rename note
             </button>
-            <button
-              className="menu-action danger"
-              onClick={() => void remove()}
-            >
-              <Trash2 size={15} />
-              Delete note
-            </button>
+            {config.vaults.length > 1 && (
+              <details className="vault-destination">
+                <summary className="menu-action">
+                  <FolderOpen size={15} />
+                  Save to another vault…
+                  <ChevronDown size={14} />
+                </summary>
+                {config.vaults
+                  .filter((v) => v.id !== vaultId)
+                  .map((v) => (
+                    <button
+                      key={v.id}
+                      className="menu-action"
+                      onClick={() => {
+                        closing.current = true;
+                        setFinishing(true);
+                        editor.current?.setReadOnly(true);
+                        void flush()
+                          .then(() =>
+                            call("save_to_vault", {
+                              vaultId,
+                              path,
+                              destination: v.id,
+                              expected: saved.current?.revision,
+                            }),
+                          )
+                          .catch((e) => {
+                            closing.current = false;
+                            setFinishing(false);
+                            editor.current?.setReadOnly(false);
+                            setError(String(e));
+                          });
+                      }}
+                    >
+                      <VaultIcon vault={v} />
+                      {v.name}
+                    </button>
+                  ))}
+              </details>
+            )}
+            <div className="format-menu-row">
+              <button
+                className="menu-action danger"
+                onClick={() => void remove()}
+              >
+                <Trash2 size={15} />
+                Delete note
+              </button>
+              <button
+                className="format-pin"
+                aria-label={`${toolbarPins.includes("delete") ? "Unpin" : "Pin"} Delete note to toolbar`}
+                aria-pressed={toolbarPins.includes("delete")}
+                onClick={() =>
+                  void call("editor_preferences", {
+                    toolbarPins: toolbarPins.includes("delete")
+                      ? toolbarPins.filter((p) => p !== "delete")
+                      : [...toolbarPins, "delete"],
+                  })
+                    .then(refresh)
+                    .catch((e) => setError(String(e)))
+                }
+              >
+                <Pin size={13} />
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -897,12 +976,12 @@ function NoteWindow({
 
 function SettingsDialog({
   config,
-  close,
+  onAppearance,
   refresh,
   initialTab = "general",
 }: {
   config: Config;
-  close: () => void;
+  onAppearance: (appearance: Settings["appearance"]) => void;
   refresh: () => Promise<void>;
   initialTab?: string;
 }) {
@@ -987,6 +1066,19 @@ function SettingsDialog({
       .then(setSystemFonts)
       .catch((e) => setError(String(e)));
   }, []);
+  const appearanceQueue = useRef(Promise.resolve());
+  const changeAppearance = (appearance: Settings["appearance"]) => {
+    field({ appearance });
+    onAppearance(appearance);
+    appearanceQueue.current = appearanceQueue.current.then(async () => {
+      try {
+        await call("set_appearance", { appearance });
+      } catch (e) {
+        setError(String(e));
+        await refresh();
+      }
+    });
+  };
   const field = (patch: Partial<Settings>) =>
     setSettings((s) => ({ ...s, ...patch }));
   return (
@@ -997,9 +1089,6 @@ function SettingsDialog({
     >
       <header>
         <h2>Settings</h2>
-        <Button label="Close settings" onClick={close}>
-          <X size={19} />
-        </Button>
       </header>
       <nav className="settings-tabs">
         {[
@@ -1062,9 +1151,7 @@ function SettingsDialog({
               <select
                 value={settings.appearance}
                 onChange={(e) =>
-                  field({
-                    appearance: e.target.value as Settings["appearance"],
-                  })
+                  changeAppearance(e.target.value as Settings["appearance"])
                 }
               >
                 <option value="system">System</option>
@@ -1125,7 +1212,7 @@ function SettingsDialog({
               />
             </div>
             <label className="setting-row">
-              <strong>Default font</strong>
+              <strong>Default Note font</strong>
               <select
                 value={settings.font}
                 onChange={(e) => field({ font: e.target.value })}
@@ -1134,7 +1221,7 @@ function SettingsDialog({
               </select>
             </label>
             <label className="setting-row">
-              <strong>Default font size</strong>
+              <strong>Default Note size</strong>
               <input
                 type="number"
                 min="10"
@@ -1160,23 +1247,32 @@ function SettingsDialog({
             <h3>Your folders</h3>
             {config.vaults.map((v) => (
               <div className="vault-setting" key={v.id}>
-                <FolderOpen size={18} />
-                <div>
-                  <strong>{v.name}</strong>
-                  <button
-                    className="text-button"
-                    aria-pressed={mainVault(config)?.id === v.id}
-                    onClick={() =>
-                      void run(() => call("set_main_vault", { vaultId: v.id }))
-                    }
-                  >
-                    <Pin size={13} />
-                    {mainVault(config)?.id === v.id
-                      ? "Main vault"
-                      : "Set as main vault"}
-                  </button>
+                <VaultIcon vault={v} size={18} />
+                <div className="vault-identity">
+                  <div className="vault-title-row">
+                    <strong>{v.name}</strong>
+                    <button
+                      className="text-button"
+                      aria-pressed={mainVault(config)?.id === v.id}
+                      onClick={() =>
+                        void run(() =>
+                          call("set_main_vault", { vaultId: v.id }),
+                        )
+                      }
+                    >
+                      <Pin size={13} />
+                      {mainVault(config)?.id === v.id
+                        ? "Main vault"
+                        : "Set as main vault"}
+                    </button>
+                  </div>
                   <small>{v.path}</small>
-                  <div className="vault-default-color">
+                  {v.github && (
+                    <small>GitHub synced · {v.github.repository}</small>
+                  )}
+                </div>
+                <div className="vault-default-color">
+                  <div className="vault-color-label">
                     <strong>Default note color</strong>
                     <button
                       className="text-button"
@@ -1192,38 +1288,55 @@ function SettingsDialog({
                     >
                       Use app default
                     </button>
-                    <ColorSwatches
-                      label={`Default color for ${v.name}`}
-                      value={v.defaultColor}
-                      dark={dark}
-                      onChange={(color) =>
-                        void run(() =>
-                          call("set_vault_defaults", { vaultId: v.id, color }),
-                        )
-                      }
-                    />
                   </div>
-                  <small>
-                    {v.github
-                      ? `GitHub synced · ${v.github.repository}`
-                      : "Externally managed · no app sync"}
-                  </small>
+                  <ColorDropdown
+                    label={`Default color for ${v.name}`}
+                    value={v.defaultColor ?? config.settings.color}
+                    dark={dark}
+                    onChange={(color) =>
+                      void run(() =>
+                        call("set_vault_defaults", { vaultId: v.id, color }),
+                      )
+                    }
+                  />
                 </div>
               </div>
             ))}
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={() => void run(registerFolder)}
-            >
-              <Plus size={15} />
-              Open a folder or Obsidian vault
-            </button>
+            <div className="action-row">
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => void run(registerFolder)}
+              >
+                <FolderOpen size={15} />
+                Open a vault…
+              </button>
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    const parent = await pickFolder(
+                      "Choose where to create the vault",
+                    );
+                    if (!parent) return;
+                    const name = prompt(
+                      "Name of the new vault folder",
+                      "Notes",
+                    );
+                    if (name) await call("create_vault", { parent, name });
+                  })
+                }
+              >
+                <Plus size={15} />
+                Create a vault…
+              </button>
+            </div>
             <hr />
             <h3>Private GitHub vault</h3>
             <p className="settings-help">
               A separate private repository, managed by Sticky Markers. Existing
-              Git repositories and Obsidian sync remain managed by their owners.
+              repositories remain managed by their owners.
             </p>
             {account ? (
               <div className="account">
@@ -1289,37 +1402,39 @@ function SettingsDialog({
               New private repository name
               <input value={repo} onChange={(e) => setRepo(e.target.value)} />
             </label>
-            <button
-              className="primary"
-              disabled={busy || !account}
-              onClick={() =>
-                void run(async () => {
-                  const path = await pickFolder();
-                  if (!path) return;
-                  await call<Vault>("github_create", { name: repo, path });
-                }, "Private vault created. Use Sync Now to download its initial contents.")
-              }
-            >
-              <Plus size={16} />
-              Create in an empty folder
-            </button>
-            <button
-              className="text-button"
-              disabled={busy || !account}
-              onClick={() =>
-                void run(async () => {
-                  const repository = prompt(
-                    "Existing app-created repository (owner/name)",
-                  );
-                  if (!repository) return;
-                  const path = await pickFolder();
-                  if (path)
-                    await call("github_reconnect", { repository, path });
-                })
-              }
-            >
-              Reconnect an app-created vault
-            </button>
+            <div className="action-row">
+              <button
+                className="primary"
+                disabled={busy || !account}
+                onClick={() =>
+                  void run(async () => {
+                    const path = await pickFolder();
+                    if (!path) return;
+                    await call<Vault>("github_create", { name: repo, path });
+                  }, "Private vault created. Use Sync Now to download its initial contents.")
+                }
+              >
+                <Plus size={16} />
+                Create in an empty folder
+              </button>
+              <button
+                className="text-button"
+                disabled={busy || !account}
+                onClick={() =>
+                  void run(async () => {
+                    const repository = prompt(
+                      "Existing app-created repository (owner/name)",
+                    );
+                    if (!repository) return;
+                    const path = await pickFolder();
+                    if (path)
+                      await call("github_reconnect", { repository, path });
+                  })
+                }
+              >
+                Reconnect an app-created vault
+              </button>
+            </div>
             {active?.github && (
               <div className="sync-options">
                 <h3>Sync · {active.name}</h3>

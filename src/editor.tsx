@@ -14,7 +14,11 @@ import {
   defaultKeymap,
   indentWithTab,
 } from "@codemirror/commands";
-import { livePreview, type PreviewOptions } from "./live-preview";
+import {
+  livePreview,
+  rowMouseSelection,
+  type PreviewOptions,
+} from "./live-preview";
 import { markdown, markdownKeymap } from "@codemirror/lang-markdown";
 export interface EditorHandle {
   format: (kind: string) => void;
@@ -38,7 +42,14 @@ export function formatEdit(
     const start = text.lastIndexOf("\n", from - 1) + 1;
     const end = text.indexOf("\n", to);
     const stop = end < 0 ? text.length : end;
-    const insert = text.slice(start, stop).split("\n").map((line) => `${"#".repeat(Number(kind.slice(-1)))} ${line.replace(/^#{1,6}\s+/, "")}`).join("\n");
+    const insert = text
+      .slice(start, stop)
+      .split("\n")
+      .map(
+        (line) =>
+          `${"#".repeat(Number(kind.slice(-1)))} ${line.replace(/^#{1,6}\s+/, "")}`,
+      )
+      .join("\n");
     return { from: start, to: stop, insert, anchor: start + insert.length };
   }
   if (kind === "bullets") {
@@ -53,11 +64,19 @@ export function formatEdit(
   if (kind === "codeblock") {
     const selected = text.slice(from, to);
     // A longer fence safely wraps selections that already contain backticks.
-    const longest = Math.max(0, ...Array.from(selected.matchAll(/`+/g), (m) => m[0].length));
+    const longest = Math.max(
+      0,
+      ...Array.from(selected.matchAll(/`+/g), (m) => m[0].length),
+    );
     const fence = "`".repeat(Math.max(3, longest + 1));
     const left = `${from > 0 && text[from - 1] !== "\n" ? "\n" : ""}${fence}\n`;
     const right = `\n${fence}${to < text.length && text[to] !== "\n" ? "\n" : ""}`;
-    return { from, to, insert: left + selected + right, anchor: from + left.length + selected.length };
+    return {
+      from,
+      to,
+      insert: left + selected + right,
+      anchor: from + left.length + selected.length,
+    };
   }
   if (kind === "table") {
     const insert = "\n\n| Heading | Heading |\n| --- | --- |\n|  |  |\n";
@@ -97,7 +116,20 @@ export const MarkdownEditor = forwardRef<
     preview?: PreviewOptions;
     heading?: string;
   }
->(function Editor({ value, onChange, dark, onLink, readOnly = false, rendered = false, plain = false, preview, heading }, ref) {
+>(function Editor(
+  {
+    value,
+    onChange,
+    dark,
+    onLink,
+    readOnly = false,
+    rendered = false,
+    plain = false,
+    preview,
+    heading,
+  },
+  ref,
+) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const callback = useRef(onChange);
@@ -107,11 +139,17 @@ export const MarkdownEditor = forwardRef<
   const presentation = useRef(new Compartment());
   const syntax = useRef(new Compartment());
   const externalChange = useRef(false);
-  const lineEnding=useRef(value.includes('\r\n')?'\r\n':'\n');
-  lineEnding.current=value.includes('\r\n')?'\r\n':'\n';
+  const lineEnding = useRef(value.includes("\r\n") ? "\r\n" : "\n");
+  lineEnding.current = value.includes("\r\n") ? "\r\n" : "\n";
   useImperativeHandle(ref, () => ({
     focus: () => view.current?.focus(),
-    setReadOnly: (locked) => view.current?.dispatch({ effects: editable.current.reconfigure([EditorState.readOnly.of(locked), EditorView.editable.of(!locked)]) }),
+    setReadOnly: (locked) =>
+      view.current?.dispatch({
+        effects: editable.current.reconfigure([
+          EditorState.readOnly.of(locked),
+          EditorView.editable.of(!locked),
+        ]),
+      }),
     format: (kind) => {
       const v = view.current;
       if (!v) return;
@@ -132,17 +170,32 @@ export const MarkdownEditor = forwardRef<
       state: EditorState.create({
         doc: value,
         extensions: [
-          presentation.current.of(rendered && preview ? livePreview(preview) : [lineNumbers(), highlightActiveLineGutter()]),
+          rowMouseSelection,
+          presentation.current.of(
+            rendered && preview
+              ? livePreview(preview)
+              : [lineNumbers(), highlightActiveLineGutter()],
+          ),
           drawSelection(),
           highlightSpecialChars(),
           history(),
-          editable.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
+          editable.current.of([
+            EditorState.readOnly.of(readOnly),
+            EditorView.editable.of(!readOnly),
+          ]),
           syntax.current.of(plain ? [] : markdown()),
           EditorView.lineWrapping,
-          keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
+          keymap.of([
+            ...markdownKeymap,
+            ...defaultKeymap,
+            ...historyKeymap,
+            indentWithTab,
+          ]),
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !externalChange.current)
-              callback.current(u.state.doc.toString().replace(/\n/g,lineEnding.current));
+              callback.current(
+                u.state.doc.toString().replace(/\n/g, lineEnding.current),
+              );
           }),
           theme.current.of(EditorView.theme({}, { dark })),
           EditorView.contentAttributes.of({
@@ -175,7 +228,7 @@ export const MarkdownEditor = forwardRef<
   }, []);
   useEffect(() => {
     const v = view.current;
-    if (v && v.state.doc.toString() !== value.replace(/\r\n/g,'\n')) {
+    if (v && v.state.doc.toString() !== value.replace(/\r\n/g, "\n")) {
       externalChange.current = true;
       try {
         v.dispatch({
@@ -192,7 +245,16 @@ export const MarkdownEditor = forwardRef<
     });
   }, [dark]);
   useEffect(() => {
-    view.current?.dispatch({ effects: [presentation.current.reconfigure(rendered && preview ? livePreview(preview) : [lineNumbers(), highlightActiveLineGutter()]), syntax.current.reconfigure(plain ? [] : markdown())] });
+    view.current?.dispatch({
+      effects: [
+        presentation.current.reconfigure(
+          rendered && preview
+            ? livePreview(preview)
+            : [lineNumbers(), highlightActiveLineGutter()],
+        ),
+        syntax.current.reconfigure(plain ? [] : markdown()),
+      ],
+    });
   }, [rendered, plain, dark, preview?.vaultId, preview?.path]);
   useEffect(() => {
     if (!heading || !view.current) return;
@@ -201,12 +263,21 @@ export const MarkdownEditor = forwardRef<
     for (let i = 1; i <= v.state.doc.lines; i++) {
       const line = v.state.doc.line(i);
       if (line.text.replace(/^#+\s*/, "").toLowerCase() === target) {
-        v.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: "start" }) }); break;
+        v.dispatch({
+          selection: { anchor: line.from },
+          effects: EditorView.scrollIntoView(line.from, { y: "start" }),
+        });
+        break;
       }
     }
   }, [heading]);
   useEffect(() => {
-    view.current?.dispatch({ effects: editable.current.reconfigure([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]) });
+    view.current?.dispatch({
+      effects: editable.current.reconfigure([
+        EditorState.readOnly.of(readOnly),
+        EditorView.editable.of(!readOnly),
+      ]),
+    });
   }, [readOnly]);
   return <div className="markdown-editor" ref={host} />;
 });

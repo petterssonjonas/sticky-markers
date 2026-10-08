@@ -35,7 +35,7 @@
         }
       },
       "rpm": {
-        "release": "6",
+        "release": "7",
         "desktopTemplate": "linux.desktop.hbs",
         "files": {
           "/usr/share/applications/dev.stickymarkers.desktop.desktop": "../packaging/linux/dev.stickymarkers.desktop.desktop"

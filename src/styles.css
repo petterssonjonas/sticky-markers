@@ -9,7 +9,7 @@
 @font-face { font-family: "Noto Sans"; src: url("/fonts/noto-sans/NotoSans.ttf") format("truetype"); font-style: normal; font-weight: 100 900; font-display: swap; }
 @font-face { font-family: "Noto Sans"; src: url("/fonts/noto-sans/NotoSans-Italic.ttf") format("truetype"); font-style: italic; font-weight: 100 900; font-display: swap; }
 :root {
-  font-family: "Libron", "Barlow", "Noto Sans", sans-serif;
+  font-family: "Barlow", "Noto Sans", sans-serif;
   color: #343c34;
   background: #f7f6f0;
   font-synthesis: none;
@@ -1490,3 +1490,30 @@ hr {
 
 .collection .note-card h2 { font-family: inherit; }
 .collection-main .collection-tools { position: sticky; top: 0; z-index: 3; background: var(--bg); }
+
+/* Spacing shared by settings rows and actions prevents adjacent controls colliding. */
+.collection.panel-expanded { max-width: 1629px; }
+.collection-main .tabs { padding-top: 6px; gap: 14px; }
+.collection-main .tabs button { display: flex; align-items: center; gap: 6px; }
+.swatches { padding-inline: 4px; }
+.action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-block: 12px; }
+.settings-pane .vault-setting { display: grid; grid-template-columns: 18px minmax(120px, 1fr) auto; align-items: start; gap: 12px; padding: 14px 0; }
+.settings-pane .vault-setting > svg { margin-top: 2px; }
+.vault-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 22px; }
+.vault-title-row .text-button { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 0; }
+.settings-pane .vault-identity small { margin-top: 5px; font-size: 12px; }
+.settings-pane .vault-default-color { padding: 0; display: flex; align-items: flex-start; gap: 12px; }
+.vault-color-label { display: flex; flex-direction: column; gap: 6px; }
+.vault-color-label .text-button { text-align: left; margin: 0; padding: 0; }
+.color-dropdown { position: relative; flex-shrink: 0; }
+.color-dropdown summary { display: flex; align-items: center; gap: 10px; list-style: none; cursor: pointer; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; background: var(--panel); }
+.color-dropdown summary::-webkit-details-marker { display: none; }
+.selected-swatch { display: inline-block; border-radius: 50%; width: 20px; height: 20px; }
+.color-popover { position: absolute; right: 0; top: calc(100% + 6px); padding: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; z-index: 6; width: 274px; box-shadow: 0 6px 20px #0002; }
+.color-popover .swatches { margin: 0; gap: 7px; }
+.vault-destination summary { cursor: pointer; list-style: none; }
+.vault-destination summary::-webkit-details-marker { display: none; }
+.vault-destination summary svg:last-child { margin-left: auto; }
+.settings-pane { container-type: inline-size; }
+@container (max-width: 550px) { .settings-pane .vault-setting { grid-template-columns: 18px minmax(0,1fr); } .settings-pane .vault-default-color { grid-column: 2; } }
+.note-drag, .update-panel h3, .update-dialog h2 { font-family: inherit; }

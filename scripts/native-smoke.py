@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         if shutil.which('xprop'):
             hints = subprocess.run(['xprop','-id',main_win,'WM_NORMAL_HINTS'],capture_output=True,text=True,check=True).stdout
             assert 'minimum size: 600 by 400' in hints, hints
-            assert 'maximum size: 300 by' not in hints, hints
+            assert 'maximum size: 1629 by' in hints, hints
         subprocess.run([xdotool,'mousemove','--window',main_win,'245','34','click','1'],check=True)
         wait_for(lambda: 'WIDTH=300' in subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True).stdout, 'notes panel did not collapse the native window')
         time.sleep(2)  # Let GTK/WebKit finish resize and lazy panel mount on Xvfb.
@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         subprocess.run([xdotool,'windowraise',main_win,'windowfocus',main_win,'mousemove','--window',main_win,'120','94','click','1'],check=True)
         wait_for(lambda: windows('New note'), 'sidebar New note did not create a draft')
         time.sleep(2)
-        assert len(list(vault.iterdir())) == 1, 'blank draft created a vault file'
+        assert len(list(vault.iterdir())) == 2 and (vault/'Note.md').read_text() == '', 'blank new note was not created immediately'
         draft_win = windows('New note')[0]
         subprocess.run([xdotool,'windowraise',draft_win,'windowfocus',draft_win,'mousemove','--window',draft_win,'402','24','click','1'], check=True)
         wait_for(lambda: not windows('New note'), 'blank draft did not close')
@@ -82,7 +82,7 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         time.sleep(2)
         draft_win = windows('New note')[0]
         subprocess.run([xdotool,'windowraise',draft_win,'windowfocus',draft_win,'mousemove','--window',draft_win,'130','120','click','1','type','--delay','40','--clearmodifiers','A draft saved safely.'], check=True)
-        wait_for(lambda: len(list(vault.glob('*.md'))) == 2, 'typed draft was not saved')
+        wait_for(lambda: (vault/'A_draft_saved_safely.md').exists(), 'typed note did not receive its filename')
         draft_path = next(p for p in vault.glob('*.md') if p != note)
         assert draft_path.stem == 'A_draft_saved_safely', draft_path
         assert draft_path.read_text() == 'A draft saved safely.'
@@ -91,6 +91,7 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         wait_for(lambda: json.loads(config.read_text())['styles'][style_key]['pinned'], 'native pin action did not persist')
         assert json.loads(config.read_text())['styles'][style_key]['pinnedAt'] > 0
         assert json.loads(config.read_text())['styles'][style_key]['color'] == 4, 'new note ignored vault default color'
+        assert json.loads(config.read_text())['styles'][style_key]['font'] == 'barlow', 'new note did not default to Barlow'
         assert json.loads(config.read_text())['styles']['native/First.md']['color'] == 0, 'vault default changed an existing note'
         subprocess.run([xdotool,'mousemove','--window',draft_win,'43','20','click','1'], check=True)
         wait_for(lambda: not json.loads(config.read_text())['styles'][style_key]['pinned'], 'native unpin action did not persist')
@@ -110,6 +111,8 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
             identity = subprocess.run(['xprop','-id',windows('First.md')[0],'_GTK_APPLICATION_ID','_NET_WM_ICON'],capture_output=True,text=True,check=True).stdout
             assert 'dev.stickymarkers.desktop' in identity, identity
             assert '_NET_WM_ICON:  not found' not in identity, 'window icon missing'
+        subprocess.run(cmd+['--new-note'], env=env, check=True, timeout=15, stdout=log, stderr=log)
+        wait_for(lambda: windows('New note') and (vault/'Note.md').exists(), 'blank note was not on disk before quit')
         # A native window becomes visible before its embedded editor/listeners mount.
         # Synthetic X input must wait for that mount and use a realistic key rate.
         time.sleep(2)
@@ -118,10 +121,11 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         subprocess.run([xdotool,'key','ctrl+q'],check=True)
         wait_for(lambda: app.poll() is not None, 'explicit quit did not complete the save handshake')
         assert 'Last thought before quit.' in note.read_text(), 'quit lost the final typed text'
+        assert not (vault/'Note.md').exists(), 'quit kept a disposable blank note'
         app=subprocess.Popen(cmd,env=env,stdout=log,stderr=log)
         wait_for(lambda: windows('First.md'), 'saved active note did not restore after quit')
         wait_for(lambda: windows('Sticky Markers'), 'restart did not show main window')
-        print('Native smoke passed: sidebar-first main window, repeat-launch routing, active-note restore, packaged editing, save-before-close, stay running with no windows, blank draft cancellation, deferred first save and naming, main/note commands, pinned desktop actions and application identity, flush-before-quit, subsequent restoration.')
+        print('Native smoke passed: sidebar-first main window, repeat-launch routing, active-note restore, packaged editing, save-before-close, stay running with no windows, immediate blank files and cleanup, first-content naming, main/note commands, pinned desktop actions and application identity, flush-before-quit, subsequent restoration.')
     except Exception:
         log.flush()
         print((root/'native.log').read_text(), file=sys.stderr)

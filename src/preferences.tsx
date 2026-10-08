@@ -1,9 +1,11 @@
-import { Check } from "lucide-react";
+import { useRef } from "react";
+import { type Vault } from "./types";
+import { Check, ChevronDown, Github, FolderOpen } from "lucide-react";
 import { palettes, colorNames } from "./palettes";
 
 export const bundledFonts = [
-  ["libron", "Libron"],
   ["barlow", "Barlow"],
+  ["libron", "Libron"],
   ["noto-sans", "Noto Sans"],
 ] as const;
 
@@ -74,5 +76,52 @@ export function ColorSwatches({
         </button>
       ))}
     </div>
+  );
+}
+
+export function VaultIcon({
+  vault,
+  size = 16,
+}: {
+  vault: Vault;
+  size?: number;
+}) {
+  const Icon = vault.github || vault.inGitRepo ? Github : FolderOpen;
+  return <Icon size={size} aria-hidden="true" />;
+}
+export function ColorDropdown({
+  value,
+  dark,
+  label,
+  onChange,
+}: {
+  value: number;
+  dark: boolean;
+  label: string;
+  onChange: (color: number) => void;
+}) {
+  const details = useRef<HTMLDetailsElement>(null);
+  const palette = dark ? palettes.classic.dark : palettes.classic.light;
+  return (
+    <details className="color-dropdown" ref={details}>
+      <summary aria-label={`Choose ${label.toLowerCase()}`}>
+        <span
+          className="selected-swatch"
+          style={{ background: palette[value] }}
+        />
+        <ChevronDown size={14} />
+      </summary>
+      <div className="color-popover">
+        <ColorSwatches
+          label={label}
+          value={value}
+          dark={dark}
+          onChange={(color) => {
+            onChange(color);
+            if (details.current) details.current.open = false;
+          }}
+        />
+      </div>
+    </details>
   );
 }

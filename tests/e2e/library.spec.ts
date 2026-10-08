@@ -65,7 +65,7 @@ test("large libraries keep closed vaults and previews lazy; menus respond prompt
   const menuStart = Date.now();
   await page.getByRole("button", { name: "Add vault", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Open folder/vault" }),
+    page.getByRole("button", { name: "Open a vault…" }),
   ).toBeVisible();
   console.log(`Vault menu visible in ${Date.now() - menuStart} ms`);
   expect(Date.now() - menuStart).toBeLessThan(1000);
@@ -98,7 +98,7 @@ test("main vault directs new notes without a redundant footer", async ({
   expect(data.files["New_home_note.md"]).toBeUndefined();
   await page.getByRole("button", { name: "Add vault", exact: true }).click();
   await expect(page.locator(".vault-menu button")).toHaveText([
-    "Open folder/vault",
+    "Open a vault…",
     "Import note(s)",
     "Create GitHub synced vault",
   ]);
@@ -347,10 +347,12 @@ test("app and vault defaults create differently colored notes without changing e
     .click();
   await page.getByRole("button", { name: "Save preferences" }).click();
   await page.getByRole("button", { name: "Vaults & GitHub" }).click();
+  await general.getByLabel("Choose default color for primary").click();
   await general
     .getByRole("group", { name: "Default color for Primary" })
     .getByRole("button", { name: "Purple pastel" })
     .click();
+  await general.getByLabel("Choose default color for primary").click();
   await expect(
     general
       .getByRole("group", { name: "Default color for Primary" })
@@ -418,7 +420,6 @@ test("compact appearance, oldest sorting and all bundled fonts work offline", as
   const settings = page.getByRole("region", { name: "Settings", exact: true });
   const appearance = settings.getByRole("combobox").first();
   await appearance.selectOption("light");
-  await page.getByRole("button", { name: "Save preferences" }).click();
   await expect(page.locator("html")).toHaveAttribute(
     "data-appearance",
     "light",
@@ -428,7 +429,6 @@ test("compact appearance, oldest sorting and all bundled fonts work offline", as
     "rgb(231, 226, 218)",
   );
   await appearance.selectOption("dark");
-  await page.getByRole("button", { name: "Save preferences" }).click();
   await expect(page.locator(".sidebar")).toHaveCSS(
     "background-color",
     "rgb(27, 32, 27)",
@@ -436,7 +436,7 @@ test("compact appearance, oldest sorting and all bundled fonts work offline", as
   await page.goto("/?vault=demo&note=Note_0000.md");
   await page.getByRole("button", { name: "Note menu", exact: true }).click();
   const fonts = page.getByLabel("Note font", { exact: true });
-  await expect(fonts.locator(":scope > option").first()).toHaveText("Libron");
+  await expect(fonts.locator(":scope > option").first()).toHaveText("Barlow");
   for (const [id, family] of [
     ["libron", "Libron"],
     ["barlow", "Barlow"],
@@ -455,4 +455,230 @@ test("compact appearance, oldest sorting and all bundled fonts work offline", as
   );
   await expect(fonts.locator('optgroup[label="System fonts"]')).toHaveCount(1);
   await page.screenshot({ path: "test-results/note-fonts.png" });
+});
+
+test("appearance saves immediately, independently of other preferences, and applies across windows", async ({
+  page,
+}) => {
+  await fixture(page);
+  const second = await page.context().newPage();
+  await second.goto("/?vault=demo&note=Note_0000.md");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const settings = page.getByRole("region", { name: "Settings", exact: true });
+  await settings.getByLabel("Default Note size").fill("22");
+  await settings.getByRole("combobox").first().selectOption("dark");
+  await expect(page.locator("html")).toHaveAttribute("data-appearance", "dark");
+  await expect(second.locator("html")).toHaveAttribute(
+    "data-appearance",
+    "dark",
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (key) =>
+          JSON.parse(localStorage.getItem(key)!).config.settings.appearance,
+        key,
+      ),
+    )
+    .toBe("dark");
+  await page.reload();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(settings.getByRole("combobox").first()).toHaveValue("dark");
+  await expect(settings.getByLabel("Default Note size")).toHaveValue("16");
+  await expect(page.locator("body")).toHaveCSS("font-family", /Barlow/);
+  await second.close();
+});
+
+test("vault identity, tab icons and compact color dropdowns have space without sync claims", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.evaluate((key) => {
+    const data = JSON.parse(localStorage.getItem(key)!);
+    data.config.vaults[1].inGitRepo = true;
+    localStorage.setItem(key, JSON.stringify(data));
+  }, key);
+  await page.reload();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Vaults & GitHub" }).click();
+  await expect(
+    page.getByRole("button", { name: "Close settings" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Externally managed", { exact: false }),
+  ).toHaveCount(0);
+  await expect(page.locator(".settings-pane")).not.toContainText("Obsidian");
+  await expect(
+    page.getByRole("button", { name: "Open a vault…" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Create a vault…" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("tab", { name: "Pinned notes" }).locator("svg.lucide-pin"),
+  ).toHaveCount(1);
+  await expect(
+    page.getByRole("tab", { name: "Settings" }).locator("svg.lucide-settings"),
+  ).toHaveCount(1);
+  await expect(
+    page
+      .getByRole("tab", { name: "Primary" })
+      .locator("svg.lucide-folder-open"),
+  ).toHaveCount(1);
+  await expect(
+    page.getByRole("tab", { name: "Other" }).locator("svg.lucide-github"),
+  ).toHaveCount(1);
+  const row = page.locator(".vault-setting").first();
+  const icon = (await row.locator(":scope > svg").boundingBox())!;
+  const title = (await row.locator(".vault-title-row").boundingBox())!;
+  const name = (await row.locator(".vault-title-row strong").boundingBox())!;
+  const pin = (await row.locator(".vault-title-row button").boundingBox())!;
+  const identity = (await row.locator(".vault-identity").boundingBox())!;
+  const color = (await row.locator(".vault-default-color").boundingBox())!;
+  expect(Math.abs(icon.y - title.y)).toBeLessThanOrEqual(3);
+  expect(Math.abs(icon.y - name.y)).toBeLessThanOrEqual(4);
+  expect(pin.x - (name.x + name.width)).toBeGreaterThanOrEqual(10);
+  expect(color.x).toBeGreaterThan(identity.x + identity.width);
+  expect((await row.boundingBox())!.height).toBeLessThan(105);
+  await expect(
+    row.getByRole("group", { name: "Default color for Primary", exact: true }),
+  ).toBeHidden();
+  await row.getByLabel("Choose default color for primary").click();
+  await expect(
+    row
+      .getByRole("group", { name: "Default color for Primary", exact: true })
+      .getByRole("button"),
+  ).toHaveCount(16);
+  await row.getByRole("button", { name: "Blue vibrant" }).click();
+  await expect(
+    row.getByRole("group", { name: "Default color for Primary", exact: true }),
+  ).toBeHidden();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (key) =>
+          JSON.parse(localStorage.getItem(key)!).config.vaults[0].defaultColor,
+        key,
+      ),
+    )
+    .toBe(15);
+  await page.screenshot({ path: "test-results/settings-vaults.png" });
+});
+
+test("Save to another vault flushes pending edits, preserves pins, and refuses collisions", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/?vault=demo&note=Note_0000.md");
+  await page.getByRole("button", { name: "Pin note", exact: true }).click();
+  await page.locator(".cm-content").press("ControlOrMeta+End");
+  await page.keyboard.type("\nLast words before moving");
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  await page.locator(".vault-destination summary").click();
+  await page
+    .locator(".vault-destination")
+    .getByRole("button", { name: "Other", exact: true })
+    .click();
+  await expect(page.locator(".menu-vault")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Unpin note", exact: true }),
+  ).toBeVisible();
+  let data = await page.evaluate(
+    (key) => JSON.parse(localStorage.getItem(key)!),
+    key,
+  );
+  expect(data.files["Note_0000.md"]).toBeUndefined();
+  expect(data.vaultFiles.other["Note_0000.md"]).toContain(
+    "Last words before moving",
+  );
+  expect(data.config.styles["other/Note_0000.md"].pinned).toBe(true);
+  await page.getByRole("button", { name: "Close note to collection" }).click();
+  await page.evaluate((key) => {
+    const d = JSON.parse(localStorage.getItem(key)!);
+    d.vaultFiles.other["Note_0001.md"] = "Do not overwrite";
+    localStorage.setItem(key, JSON.stringify(d));
+  }, key);
+  await page.goto("/?vault=demo&note=Note_0001.md");
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  await page.locator(".vault-destination summary").click();
+  await page
+    .locator(".vault-destination")
+    .getByRole("button", { name: "Other", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText("already exists");
+  await expect(page.locator(".cm-content")).toHaveAttribute(
+    "contenteditable",
+    "true",
+  );
+  data = await page.evaluate(
+    (key) => JSON.parse(localStorage.getItem(key)!),
+    key,
+  );
+  expect(data.files["Note_0001.md"]).toContain("# Note 1");
+  expect(data.vaultFiles.other["Note_0001.md"]).toBe("Do not overwrite");
+});
+
+test("Delete is pinnable globally and still requires confirmation", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/?vault=demo&note=Note_0000.md");
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Pin Delete note to toolbar" })
+    .click();
+  await expect(
+    page
+      .locator(".format-buttons")
+      .getByRole("button", { name: "Delete note" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page
+    .locator(".format-buttons")
+    .getByRole("button", { name: "Delete note" })
+    .click();
+  await expect(page.locator(".note-window")).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page
+    .locator(".format-buttons")
+    .getByRole("button", { name: "Delete note" })
+    .click();
+  await expect(page.locator(".collection")).toBeVisible();
+  const data = await page.evaluate(
+    (key) => JSON.parse(localStorage.getItem(key)!),
+    key,
+  );
+  expect(data.files["Note_0000.md"]).toBeUndefined();
+  expect(data.config.settings.toolbarPins).toContain("delete");
+});
+
+test("triple-click replaces only the clicked source row and leaves the next rendered row intact", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/?vault=demo&note=Note_0000.md");
+  const rows = page.locator(".lp-list-line");
+  await rows.first().click({ clickCount: 3 });
+  await expect(page.locator(".lp-source-line")).toHaveCount(1);
+  await expect(rows.nth(1)).toHaveText("• second");
+  await page.keyboard.type("Replacement");
+  await page.getByRole("button", { name: "Close note to collection" }).click();
+  const source = await page.evaluate(
+    (key) => JSON.parse(localStorage.getItem(key)!).files["Note_0000.md"],
+    key,
+  );
+  expect(source).toBe("# Note 0\n\n**Preview**\n\nReplacement\n- second");
+});
+
+test("expanded preview width stops at six columns", async ({ page }) => {
+  await page.setViewportSize({ width: 2000, height: 900 });
+  await fixture(page, 24);
+  await page.getByRole("button", { name: "Open notes panel" }).click();
+  await expect(page.locator(".note-card")).toHaveCount(24);
+  expect((await page.locator(".collection").boundingBox())!.width).toBe(1629);
+  const positions = await page
+    .locator(".note-card")
+    .evaluateAll((cards) => cards.map((c) => c.getBoundingClientRect().y));
+  expect(positions.filter((y) => y === positions[0])).toHaveLength(6);
 });

@@ -15,6 +15,7 @@ export interface Vault {
   name: string;
   path: string;
   github: SyncConfig | null;
+  inGitRepo?: boolean;
   defaultColor?: number | null;
 }
 export interface Settings {
@@ -31,6 +32,7 @@ export interface Settings {
   toolbarPins: string[];
 }
 export interface NoteStyle {
+  provisional?: boolean;
   palette: string;
   color: number;
   font: string;
@@ -58,6 +60,7 @@ export interface Document extends NoteRef {
   revision: string;
 }
 export interface Config {
+  fontDefaultsMigrated?: boolean;
   vaults: Vault[];
   activeVault: string | null;
   mainVault?: string | null;
@@ -72,7 +75,7 @@ export const defaults: Settings = {
   appearance: "system",
   palette: "classic",
   color: 0,
-  font: "libron",
+  font: "barlow",
   fontSize: 16,
   githubClientId: "",
   checkUpdates: true,

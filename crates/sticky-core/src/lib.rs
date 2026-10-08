@@ -114,6 +114,8 @@ pub fn timestamp() -> u64 {
 #[serde(rename_all = "camelCase")]
 pub struct Vault {
     #[serde(default)]
+    pub in_git_repo: bool,
+    #[serde(default)]
     pub default_color: Option<usize>,
     pub id: String,
     pub name: String,
@@ -145,7 +147,7 @@ impl Default for Settings {
             appearance: "system".into(),
             palette: "classic".into(),
             color: 0,
-            font: "libron".into(),
+            font: "barlow".into(),
             font_size: 16.0,
             github_client_id: option_env!("STICKY_GITHUB_CLIENT_ID").unwrap_or("").into(),
             check_updates: true,
@@ -156,6 +158,7 @@ impl Default for Settings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NoteStyle {
+    pub provisional: bool,
     pub palette: String,
     pub color: usize,
     pub font: String,
@@ -173,6 +176,7 @@ impl Default for NoteStyle {
     fn default() -> Self {
         let s = Settings::default();
         Self {
+            provisional: false,
             palette: s.palette,
             color: s.color,
             font: s.font,
@@ -191,6 +195,7 @@ impl Default for NoteStyle {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
+    pub font_defaults_migrated: bool,
     pub vaults: Vec<Vault>,
     pub active_vault: Option<String>,
     pub main_vault: Option<String>,
@@ -265,8 +270,23 @@ impl Core {
     }
     fn read_config(&self) -> Result<Config> {
         match fs::read(self.data.join("settings.json")) {
-            Ok(b) => Ok(serde_json::from_slice(&b)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+            Ok(b) => {
+                let mut config: Config = serde_json::from_slice(&b)?;
+                if !config.font_defaults_migrated {
+                    if config.settings.font == "libron" {
+                        config.settings.font = "barlow".into();
+                    }
+                    config.font_defaults_migrated = true;
+                }
+                for v in &mut config.vaults {
+                    v.in_git_repo = v.github.is_some() || has_git_ancestor(Path::new(&v.path));
+                }
+                Ok(config)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config {
+                font_defaults_migrated: true,
+                ..Config::default()
+            }),
             Err(e) => Err(e.into()),
         }
     }
@@ -306,6 +326,7 @@ impl Core {
                 ));
             }
             let v = Vault {
+                in_git_repo: has_git_ancestor(&root),
                 default_color: None,
                 id: uuid::Uuid::new_v4().to_string(),
                 name: root
@@ -323,6 +344,96 @@ impl Core {
             c.vaults.push(v.clone());
             Ok(v)
         })
+    }
+    /// Create an exclusive new folder, then register it. Existing folders are never reused.
+    pub fn create_vault(&self, parent: &Path, name: &str) -> Result<Vault> {
+        if name.trim() != name
+            || name.is_empty()
+            || name.starts_with('.')
+            || name
+                .chars()
+                .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+            || name.ends_with([' ', '.'])
+        {
+            return Err(message(
+                "Choose a simple folder name without path separators",
+            ));
+        }
+        let parent = fs::canonicalize(parent)?;
+        let folder = parent.join(name);
+        fs::create_dir(&folder)?;
+        match self.register(&folder) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                let _ = fs::remove_dir(&folder);
+                Err(e)
+            }
+        }
+    }
+    pub fn create_new_note(&self, id: &str) -> Result<Document> {
+        let d = self.create(id, None, "", None)?;
+        let mut style = self.style(id, &d.path)?;
+        style.provisional = true;
+        style.open = true;
+        self.set_style(id, &d.path, style)?;
+        Ok(d)
+    }
+    /// Give the first saved content its filename, with no-clobber collision handling.
+    /// Saving precedes naming so a failed rename cannot lose the user's text.
+    pub fn finish_new_note(&self, d: Document) -> Result<Document> {
+        if d.content.trim().is_empty() || !self.style(&d.vault_id, &d.path)?.provisional {
+            return Ok(d);
+        }
+        let stem = note_name(&d.content);
+        let mut suffix = 1usize;
+        let renamed = loop {
+            let tail = if suffix == 1 {
+                String::new()
+            } else {
+                format!("_{suffix}")
+            };
+            let prefix: String = stem
+                .chars()
+                .take(20usize.saturating_sub(tail.len()))
+                .collect();
+            let candidate = format!("{prefix}{tail}.md");
+            if candidate != d.path && self.resolve(&d.vault_id, &candidate)?.exists() {
+                suffix += 1;
+                continue;
+            }
+            match self.rename(&d.vault_id, &d.path, &candidate, &d.revision) {
+                Ok(new) => break new,
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    suffix += 1;
+                }
+                Err(Error::Message(s)) if s == "A note already exists at that path" => {
+                    suffix += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        self.update_config(|c| {
+            if let Some(s) = c
+                .styles
+                .get_mut(&format!("{}/{}", renamed.vault_id, renamed.path))
+            {
+                s.provisional = false;
+            }
+            Ok(())
+        })?;
+        Ok(renamed)
+    }
+    /// Only blank notes created by the app are disposable. CAS protects external edits.
+    pub fn cleanup_empty_new_note(&self, id: &str, path: &str) -> Result<bool> {
+        if !self.style(id, path)?.provisional {
+            return Ok(false);
+        }
+        let d = self.read(id, path)?;
+        if !d.content.trim().is_empty() {
+            return Ok(false);
+        }
+        self.delete(id, path, &d.revision)?;
+        Ok(true)
     }
     pub fn resolve(&self, vault_id: &str, relative: &str) -> Result<PathBuf> {
         let v = self.vault(vault_id)?;
@@ -901,6 +1012,80 @@ mod tests {
         fs::create_dir(d.path().join("vault")).unwrap();
         let v = core.register(&d.path().join("vault")).unwrap();
         (d, core, v)
+    }
+    #[test]
+    fn new_note_files_exist_immediately_and_only_disposable_blanks_are_removed() {
+        let (_tmp, core, v) = fixture();
+        let new = core.create_new_note(&v.id).unwrap();
+        assert!(Path::new(&v.path).join(&new.path).exists());
+        assert_eq!(core.read(&v.id, &new.path).unwrap().content, "");
+        assert!(core.style(&v.id, &new.path).unwrap().provisional);
+        assert!(core.cleanup_empty_new_note(&v.id, &new.path).unwrap());
+        let imported = core.create(&v.id, Some("Imported.md"), "", None).unwrap();
+        assert!(!core.cleanup_empty_new_note(&v.id, &imported.path).unwrap());
+        let external = core.create_new_note(&v.id).unwrap();
+        fs::write(Path::new(&v.path).join(&external.path), "External edit").unwrap();
+        assert!(!core.cleanup_empty_new_note(&v.id, &external.path).unwrap());
+        assert_eq!(
+            core.read(&v.id, &external.path).unwrap().content,
+            "External edit"
+        );
+    }
+    #[test]
+    fn first_save_names_new_notes_and_preserves_collision_content() {
+        let (_tmp, core, v) = fixture();
+        core.create(&v.id, Some("First_words.md"), "Existing", None)
+            .unwrap();
+        let new = core.create_new_note(&v.id).unwrap();
+        let saved = core
+            .save(&v.id, &new.path, &new.revision, "## First words", None)
+            .unwrap();
+        let named = core.finish_new_note(saved).unwrap();
+        assert_eq!(named.path, "First_words_2.md");
+        assert_eq!(
+            core.read(&v.id, "First_words.md").unwrap().content,
+            "Existing"
+        );
+        assert!(!Path::new(&v.path).join(&new.path).exists());
+        assert!(!core.style(&v.id, &named.path).unwrap().provisional);
+        let cleared = core
+            .save(&v.id, &named.path, &named.revision, "", None)
+            .unwrap();
+        assert!(!core.cleanup_empty_new_note(&v.id, &cleared.path).unwrap());
+    }
+    #[test]
+    fn vault_creation_is_exclusive_and_detects_existing_git_ancestors() {
+        let (tmp, core, v) = fixture();
+        assert!(core.create_vault(tmp.path(), "../escape").is_err());
+        assert!(core.create_vault(tmp.path(), "vault").is_err());
+        assert!(core.create_vault(Path::new(&v.path), "Nested").is_err());
+        assert!(!Path::new(&v.path).join("Nested").exists());
+        fs::create_dir(tmp.path().join(".git")).unwrap();
+        fs::write(tmp.path().join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        let git = core.create_vault(tmp.path(), "New notes").unwrap();
+        assert!(git.in_git_repo);
+        assert!(git.github.is_none());
+        assert!(core.config().unwrap().vaults.iter().all(|v| v.in_git_repo));
+    }
+    #[test]
+    fn barlow_migration_runs_once_and_keeps_individual_fonts() {
+        let (tmp, core, _) = fixture();
+        let settings = core.data.join("settings.json");
+        fs::write(
+            &settings,
+            r#"{"settings":{"font":"libron"},"styles":{"v/n.md":{"font":"libron"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(core.config().unwrap().settings.font, "barlow");
+        assert_eq!(core.config().unwrap().styles["v/n.md"].font, "libron");
+        core.update_config(|c| {
+            c.settings.font = "libron".into();
+            Ok(())
+        })
+        .unwrap();
+        let reopened = Core::new(tmp.path().join("state")).unwrap();
+        assert_eq!(reopened.config().unwrap().settings.font, "libron");
+        assert_eq!(Settings::default().font, "barlow");
     }
     #[test]
     fn text_formats_are_bounded_and_binary_files_are_skipped() {

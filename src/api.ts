@@ -37,9 +37,15 @@ function load(): Demo {
   if (saved) {
     const d = JSON.parse(saved) as Demo;
     d.config.settings = { ...defaults, ...d.config.settings };
+    if (!d.config.fontDefaultsMigrated) {
+      if (d.config.settings.font === "libron")
+        d.config.settings.font = "barlow";
+      d.config.fontDefaultsMigrated = true;
+    }
     return d;
   }
   const config: Config = {
+    fontDefaultsMigrated: true,
     vaults: [
       {
         id: "demo",
@@ -261,39 +267,48 @@ async function demoCall<T>(
     case "save_note": {
       if (new TextEncoder().encode(String(args.content)).length > 100 * 1024)
         throw new Error("Note exceeds the 100 KiB editing limit");
-      if (draft && !draft.path && String(args.content)) {
-        draft.path = autoName(String(args.content), files);
-        path = draft.path;
-        files[path] = "";
-        d.config.styles[`${id}/${path}`] = {
-          ...defaults,
-          open: true,
-          pinned: false,
-          pinnedAt: 0,
-          x: null,
-          y: null,
-          ...draft.style,
-        };
-      }
       const n = await doc(path);
       if (n.revision !== args.expected)
         throw new Error(
           "Conflict: note changed. Your unsaved text is still in this window.",
         );
       files[path] = String(args.content);
+      const style = d.config.styles[`${id}/${path}`];
+      if (style?.provisional && files[path].trim()) {
+        const target = autoName(
+          files[path],
+          Object.fromEntries(Object.entries(files).filter(([p]) => p !== path)),
+        );
+        if (target !== path) {
+          files[target] = files[path];
+          delete files[path];
+          d.config.styles[`${id}/${target}`] = style;
+          delete d.config.styles[`${id}/${path}`];
+          for (const alias of drafts.values())
+            if (alias.path === path) alias.path = target;
+          path = target;
+        }
+        style.provisional = false;
+      }
       out = await doc(path);
       break;
     }
     case "new_note": {
       const p = `draft-${crypto.randomUUID()}`;
-      drafts.set(p, {
-        style: defaultStyle(
+      const target = autoName("", files);
+      files[target] = "";
+      d.config.styles[`${id}/${target}`] = {
+        ...defaultStyle(
           d.config.settings,
           d.config.vaults.find((v) => v.id === id),
         ),
-      });
-      out = await doc(p);
+        provisional: true,
+        open: true,
+      };
+      drafts.set(p, { path: target });
+      out = await doc(target);
       persist(d);
+      window.dispatchEvent(new Event("demo-notes-changed"));
       navigate(id, p);
       return out as T;
     }
@@ -303,6 +318,7 @@ async function demoCall<T>(
         d.config.vaults.find((v) => v.id === id),
       );
       persist(d);
+      window.dispatchEvent(new Event("demo-notes-changed"));
       navigate(id, path);
       if (args.heading) {
         const q = new URL(location.href);
@@ -315,21 +331,25 @@ async function demoCall<T>(
       navigate();
       return null as T;
     case "tuck_note":
-      if (draft && !draft.path) {
-        drafts.delete(String(args.path));
-        navigate();
-        return null as T;
-      }
-      d.config.styles[`${id}/${path}`] = {
-        ...d.config.styles[`${id}/${path}`],
-        open: false,
-      };
+      if (
+        d.config.styles[`${id}/${path}`]?.provisional &&
+        !files[path]?.trim()
+      ) {
+        delete files[path];
+        delete d.config.styles[`${id}/${path}`];
+      } else
+        d.config.styles[`${id}/${path}`] = {
+          ...d.config.styles[`${id}/${path}`],
+          open: false,
+        };
       persist(d);
+      window.dispatchEvent(new Event("demo-notes-changed"));
       navigate();
       return null as T;
     case "delete_note":
       delete files[path];
       persist(d);
+      window.dispatchEvent(new Event("demo-notes-changed"));
       navigate();
       return null as T;
     case "rename_note": {
@@ -341,13 +361,44 @@ async function demoCall<T>(
       d.config.styles[`${id}/${target}`] = d.config.styles[`${id}/${path}`];
       delete d.config.styles[`${id}/${path}`];
       persist(d);
+      window.dispatchEvent(new Event("demo-notes-changed"));
       navigate(id, target);
       return (await doc(target)) as T;
     }
     case "set_style":
       if (draft && !draft.path) draft.style = args.style as NoteStyle;
-      else d.config.styles[`${id}/${path}`] = args.style as NoteStyle;
+      else
+        d.config.styles[`${id}/${path}`] = {
+          ...(args.style as NoteStyle),
+          provisional: d.config.styles[`${id}/${path}`]?.provisional,
+        };
       break;
+    case "set_appearance":
+      d.config.settings.appearance = args.appearance as Settings["appearance"];
+      break;
+    case "save_to_vault": {
+      if ((await doc(path)).revision !== args.expected)
+        throw new Error("Conflict: note changed.");
+      const destination = String(args.destination);
+      const target =
+        destination === "demo"
+          ? d.files
+          : ((d.vaultFiles ??= {})[destination] ??= {});
+      if (path in target)
+        throw new Error("A note already exists at the target path");
+      target[path] = files[path];
+      delete files[path];
+      d.config.styles[`${destination}/${path}`] = {
+        ...d.config.styles[`${id}/${path}`],
+        provisional: false,
+        open: true,
+      };
+      delete d.config.styles[`${id}/${path}`];
+      persist(d);
+      window.dispatchEvent(new Event("demo-notes-changed"));
+      navigate(destination, path);
+      return null as T;
+    }
     case "set_settings":
       d.config.settings = args.settings as Settings;
       break;
@@ -392,13 +443,15 @@ export function call<T>(
     ? invoke<T>("dispatch", { operation, args })
     : demoCall<T>(operation, args);
 }
-export async function pickFolder(): Promise<string | null> {
+export async function pickFolder(
+  title = "Choose a vault folder",
+): Promise<string | null> {
   if (!desktop)
     throw new Error("Open the installed desktop app to choose a real folder.");
   const p = await open({
     directory: true,
     multiple: false,
-    title: "Choose a notes folder or Obsidian vault",
+    title,
   });
   return typeof p === "string" ? p : null;
 }

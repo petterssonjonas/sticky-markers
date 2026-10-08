@@ -32,3 +32,22 @@ Verification: 27 core Rust tests, 9 editor tests, 27 browser tests and 4 release
 - [x] Browser, core and packaged window checks; push main and produce refreshed RPM.
 
 Follow-up validation includes bundled font loading, global/vault color inheritance and note independence, multi-vault tabs, fixed collapsed width and vertical resize, expanded minimum size, and packaged save/close/quit behavior. RPM package revision: 6.
+
+
+## Immediate preferences and compact vault controls
+
+- [x] Appearance applies immediately across windows and saves without Save preferences.
+- [x] Barlow application/default note font; migrate old Libron defaults once, preserve individual note fonts.
+- [x] Padded tabs, swatches and reusable action spacing; aligned vault identities and spaced Main pins.
+- [x] Default-color dropdown to the right of each vault, with compact responsive fallback.
+- [x] Folder/GitHub icons in vault navigation/settings/tabs; Pin/Settings icons in tabs.
+- [x] Remove unmanaged sync claims and Obsidian references from GitHub settings.
+- [x] Open/Create vault controls; exclusive folder creation; remove Settings close X.
+- [x] Native expanded maximum width supports six preview columns; default Note font/size labels.
+- [x] Immediately create new blank files, remove untouched blanks on close/quit, name first content safely.
+- [x] Flush-before-close and cross-vault save; preserve pins; reject collisions without overwriting.
+- [x] Pinnable Delete action retains confirmation and global toolbar settings.
+- [x] Triple-click selects only the clicked source row, excludes newline and next rendered row.
+- [x] Final packaged native checks, push main and refreshed RPM revision 7.
+
+Validation: 31 Rust core tests, 9 editor tests, 33 browser tests and 4 release tests passed. The final spacing adjustment passed targeted layout/font/six-column checks. Windows cross-compilation, packaged MCP stdio checks, RPM/DEB payload permissions, and native Linux close/save/blank cleanup/quit/restore checks passed. RPM package revision: 7.

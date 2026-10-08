@@ -192,7 +192,7 @@ test("update checks offer package links without installation controls", async ({
   ).not.toBeChecked();
 });
 
-test("blank drafts stay off disk; first save names the note and pinning survives close", async ({
+test("new blank files exist immediately and are deleted on close; first save names notes and keeps pins", async ({
   page,
 }) => {
   await page.goto("/");
@@ -210,7 +210,7 @@ test("blank drafts stay off disk; first save names the note and pinning survives
           .files,
       ),
     );
-  expect(await files()).toHaveLength(5);
+  expect(await files()).toHaveLength(6);
   await page.getByRole("button", { name: "Close note to collection" }).click();
   expect(await files()).toHaveLength(5);
   await page
