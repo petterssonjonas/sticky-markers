@@ -4,16 +4,19 @@ Markdown sticky notes for Linux, macOS, and Windows. Built with Tauri 2, Rust, R
 
 ## Using the app
 
-On first launch, choose a folder or an existing Obsidian vault. Register additional folders in the vault picker and switch between them. Notes remain ordinary UTF-8 text files (including `.md`, `.json`, `.toml`, and `.conf`), including subfolders and existing frontmatter. Opening a note creates its own resizable, frameless window.
+The main window starts as a compact sidebar. Use **Add vault → Open folder/vault** to register local folders or existing Obsidian vaults; expand each vault to list its filenames. Notes remain ordinary UTF-8 text files (including `.md`, `.json`, `.toml`, and `.conf`), with subfolders and frontmatter preserved. Opening a note creates its own resizable, frameless desktop window.
 
-- **+** creates a note. **Close** saves and tucks it into the collection; **Delete** is a separate, confirmed action.
-- The header offers pinning, bold, italic, underline, strikethrough, bullets, headings 1–6, and inline/fenced code. The note menu includes a starter table, Edit/Rendered mode, fonts, size, export, rename, and the main window. Pinned notes have their own collection filter. Save status sits after the title, moving into the menu in narrow windows.
-- Choose from 16 colors in Classic, Gruvbox, Nord, or Catppuccin. Each note has a darker header. Light, dark, and system appearance are available.
-- Rendered mode is the editable default: the active paragraph shows its Markdown markers while the rest renders. Source Edit mode shows entirely raw text without Markdown styling, with a separate line-number gutter, undo/redo, Markdown highlighting, and keyboard shortcuts. New blank windows stay in memory until text is entered; the first save names the file from its first nonempty line (at most 20 characters, spaces become underscores, collisions get a suffix). Non-Markdown text files open in source Edit mode. Both font selectors include installed system fonts. Rendering supports GFM tables/tasks/footnotes, math, sanitized HTML, highlighted code, Mermaid, wikilinks, heading links, and local image embeds.
-- First launch shows the collection. Subsequent launches restore active notes; if all notes were tucked away, a new one opens. Launching the application while it is already running creates a new note.
-- The tray menu offers the collection, new note, the ten most recently pinned notes, and Quit. Platform adapters also provide macOS Dock menus, Windows Jump Lists, and Linux desktop actions. Linux launcher support depends on the desktop shell.
+- Pin one **main vault** with the pin beside its folder. All new notes and imports go there. **Add vault** also offers multi-file import and a separate private GitHub synced vault.
+- **New note** sits below the logo. **Close** saves and tucks a note away; **Delete** is a separate, confirmed action. Ctrl/Cmd-click and Shift-click select multiple sidebar notes for dragging into another vault. Hovering over a closed vault opens it after a short delay. Open editors save and close before moving; moves preserve relative paths, reject collisions and keep recovery copies.
+- The sidebar panel button opens the larger **All notes / Pinned notes** collection. Vault filename lists are paged; preview cards and Markdown rendering load on demand. Sort by date (newest first), name, size, or type. Search matches filenames, relative paths and note contents; full-text scans run only for a search query and their results are cached.
+- Formatting tools live below the font controls in the note menu: bold, italic, underline, strikethrough, bullets, heading levels, inline/fenced code and tables. Each tool can be pinned to the header; toolbar pins are global. The header keeps New note, note pin, title, menu and Close. Routine save indicators are omitted; save failures remain visible with recovery actions.
+- Classic has yellow, orange, pink, red, purple, green, gray and blue: pastel choices in the top row, vibrant versions below. Each note has a darker header. Light, dark, and system appearance are available.
+- Rendered is the editable default. Only selected source rows reveal Markdown markers, retaining compact list geometry; tables stay rendered and their cells are editable. Edit shows entirely raw text with separate line numbers and undo/redo. The editor mode is global for Markdown notes; other text formats remain in source mode. Fonts include installed system fonts. Tables/tasks, math, Mermaid, links and images are supported; preview cards use sanitized Markdown rendering.
+- Blank windows stay in memory until text is entered; the first save names the file from its first nonempty line (at most 20 characters, spaces become underscores, collisions get a suffix).
+- Opening or relaunching the application shows the main window. Cold launch also restores recorded active notes, without scanning the vaults on the native UI thread.
+- The tray menu offers the main window, new note, the ten most recently pinned notes, and Quit. Platform adapters also provide macOS Dock menus, Windows Jump Lists, and Linux desktop actions. Linux launcher support depends on the desktop shell.
 
-`Ctrl/Cmd+N`: new note. `Ctrl/Cmd+S`: save. `Ctrl/Cmd+Q`: save all notes and quit. `Ctrl/Cmd+B/I/U`: formatting. `/` focuses collection search. Source-editor external links open with Ctrl/Cmd-click.
+`Ctrl/Cmd+N`: new note. `Ctrl/Cmd+S`: save. `Ctrl/Cmd+Q`: save all notes and quit. `Ctrl/Cmd+B/I/U`: formatting. `/` focuses library search. Source-editor external links open with Ctrl/Cmd-click.
 
 ## Files and saving
 
@@ -102,12 +105,12 @@ cargo build --locked -p sticky-markers-mcp
 python3 scripts/mcp-smoke.py
 ```
 
-Set `CHROMIUM_PATH=/usr/bin/chromium` to use an already installed browser. Tests cover concurrent/stale writes, exact byte round trips, interrupted request acknowledgement, scope/path enforcement, protected external repositories, non-force sync, conflict copies, editor formatting, and browser workflows. The extracted Linux installer passed native checks for active-note restoration, typing/save/close, remaining alive with every note closed, repeat-launch creation, main/recent-note commands, and desktop actions. The bundled MCP executable also passed the stdio smoke test. Windows cross-compilation was checked; macOS and Windows native behavior still require their CI and desktop runs.
+Set `CHROMIUM_PATH=/usr/bin/chromium` to use an already installed browser. Tests cover concurrent/stale writes, exact byte round trips, interrupted request acknowledgement, scope/path enforcement, protected external repositories, non-force sync, conflict copies, editor formatting, and browser workflows. The extracted Linux installer passed native checks for active-note restoration, typing/save/close, remaining alive with every note closed, repeat-launch main-window activation, main/recent-note commands, and desktop actions. The bundled MCP executable also passed the stdio smoke test. Windows cross-compilation was checked; macOS and Windows native behavior still require their CI and desktop runs.
 
 ## Cloud workspace
 
 Source `scripts/cloud-env.sh` to use the tools and Debian libraries installed under `/workspace` without root. `scripts/setup-cloud.sh` recreates the development setup on this Debian cloud host. Linux WebKit subprocesses in that rootless sysroot need the `proot` bind described in `scripts/start-cloud-desktop.sh`; ordinary desktop installations do not need it.
 
-The original design and remaining scaling work are in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Current discovery uses periodic scans rather than a filesystem watcher/index, and the collection grid is not virtualized. Large-vault performance, attachment insertion, full Obsidian plugin rendering, remote MCP transport, and platform code-signing/notarization remain follow-up work.
+The original design is in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md); the current UI requirements and verification checklist are in [UI_CHANGE_TODO.md](UI_CHANGE_TODO.md). Library discovery uses a cached metadata index with paginated results, small file-prefix checks, and lazy previews. Open lists periodically refresh to detect externally managed changes. Attachment insertion, full Obsidian plugin rendering, remote MCP transport, and platform code-signing/notarization remain follow-up work.
 
 GPL-3.0-only; see [LICENSE](LICENSE).

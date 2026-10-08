@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, useRef } from "react";
+import { useEffect, useId, useState, useRef, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -123,7 +123,7 @@ function Image({
     <span className="missing-image">Attachment: {alt ?? src}</span>
   );
 }
-export function Markdown({
+export const Markdown = memo(function Markdown({
   content,
   dark,
   vaultId,
@@ -198,4 +198,4 @@ export function Markdown({
       </ReactMarkdown>
     </div>
   );
-}
+});

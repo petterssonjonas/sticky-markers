@@ -2,7 +2,7 @@
 
 Status: implemented first desktop version in this workspace. See README.md for current behavior, run/build commands, verification, and limitations. The design below records the agreed direction; it is not a claim that every proposed scaling or platform validation step is complete.
 
-Implemented: Tauri/Rust/React, Markdown folder vaults, separate styled note windows, safe shared saves and recovery, local stdio MCP, app-managed private GitHub API synchronization, platform menu adapters, Linux installer, and CI matrix. GitHub live sign-in requires an OAuth device-flow client ID; macOS/Windows native runtime validation and platform code-signing/notarization remain outstanding. Read-only in-app update checks and multi-format release automation are implemented; updates link to release packages for manual installation in the original format. See RELEASE.md for the one-time release signing secret setup. Periodic scans replace the proposed watcher/index for this version; virtualization, attachment insertion, and broader Obsidian-specific rendering are follow-up work. The GitHub implementation uses the Git Data API without a local Git checkout and resolves whole-file conflicts explicitly.
+Implemented: Tauri/Rust/React, Markdown folder vaults, separate styled note windows, safe shared saves and recovery, local stdio MCP, app-managed private GitHub API synchronization, platform menu adapters, Linux installer, and CI matrix. GitHub live sign-in requires an OAuth device-flow client ID; macOS/Windows native runtime validation and platform code-signing/notarization remain outstanding. Read-only in-app update checks and multi-format release automation are implemented; updates link to release packages for manual installation in the original format. See RELEASE.md for the one-time release signing secret setup. The library now uses a cached metadata index, paginated filename lists and lazy previews; attachment insertion and broader Obsidian-specific rendering are follow-up work. The latest implemented sidebar, editor and vault requirements are tracked in UI_CHANGE_TODO.md and take precedence over historical design details below. The GitHub implementation uses the Git Data API without a local Git checkout and resolves whole-file conflicts explicitly.
 
 ## Product
 
@@ -109,13 +109,13 @@ Supply copyable harness configuration and verify negotiation, listing, reading, 
 Confirmed requirements:
 
 - First launch opens the main window and folder selection; provide a prominent New Note action once a writable folder is selected and an uncluttered empty state.
-- Subsequent launches show active note windows without automatically opening the main window.
+- Every normal launch opens the sidebar-first main window; cold launches also restore recorded active note windows.
 - Every note has its own native window. A note can be returned to the collection without deleting its contents.
 - The main window lists every Markdown note in the selected vault, including those currently open, and opening an already-open note focuses its existing window.
 - The main window can be opened from any note. There is only one main window.
 - New Note creates a note at the configured size and Edit/View default. Edit mode focuses the editor immediately.
 - Preserve each note's content, appearance, mode, and supported window geometry across restarts.
-- Cold launch restores active notes. Launching the app while it is already running creates a new note.
+- Cold launch restores active notes from saved window metadata, without scanning the whole library. Relaunch while running focuses the main window.
 - There is no minimize button. Close saves and tucks a note into the collection; that note stays tucked away on subsequent launches. Closing a note does not automatically open the main window.
 - The OS dock/taskbar icon's context menu offers Open Main Window and the last five notes.
 
@@ -125,7 +125,7 @@ Interpret “last five” as the five most recently opened or explicitly activat
 
 Use a native Dock menu on macOS and a taskbar Jump List on Windows, adding platform-specific Rust integration where Tauri's shared menu API is insufficient. Investigate desktop launcher actions for supported Linux desktops. Linux has no universal dynamic dock context-menu API, so exact last-five behavior needs a tested desktop target. Proposed fallback: expose the same actions through a tray menu and the main window on unsupported desktops; confirm this tradeoff with the user. Do not silently substitute a tray icon for the requested dock integration on supported systems.
 
-Provisional recovery behavior: if a later launch has no active notes, create a new note so the app always gives visible feedback. Explicit Quit saves and exits while retaining active-note restoration state. Closing the main window does not close active notes. Keep the app available after its last window closes where the OS supports it, with explicit Quit available. A tray/menu-bar menu may additionally provide New Note, All Notes, Settings, and Quit. Access must also work without a tray, especially on Linux. Dock/taskbar activation and app relaunch are not identical on every OS; prototype and document the actual behavior.
+If a later launch has no active notes, open the sidebar main window. Explicit Quit saves and exits while retaining active-note restoration state. Closing the main window does not close active notes. Keep the app available after its last window closes where the OS supports it, with explicit Quit available. A tray/menu-bar menu may additionally provide New Note, All Notes, Settings, and Quit. Access must also work without a tray, especially on Linux. Dock/taskbar activation and app relaunch are not identical on every OS; prototype and document the actual behavior.
 
 Window dragging uses only noninteractive header space. Test resizing, focus, keyboard navigation, and monitor/DPI changes. Restore off-screen windows to a visible display when platform APIs permit. Linux Wayland may restrict exact positioning; support compositor placement gracefully rather than promise identical positioning everywhere.
 

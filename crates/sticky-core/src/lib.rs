@@ -1,4 +1,5 @@
 pub mod github;
+pub mod library;
 pub mod update;
 
 use fs2::FileExt;
@@ -131,6 +132,7 @@ pub struct Settings {
     pub font_size: f64,
     pub github_client_id: String,
     pub check_updates: bool,
+    pub toolbar_pins: Vec<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -145,6 +147,7 @@ impl Default for Settings {
             font_size: 16.0,
             github_client_id: option_env!("STICKY_GITHUB_CLIENT_ID").unwrap_or("").into(),
             check_updates: true,
+            toolbar_pins: Vec::new(),
         }
     }
 }
@@ -188,6 +191,7 @@ impl Default for NoteStyle {
 pub struct Config {
     pub vaults: Vec<Vault>,
     pub active_vault: Option<String>,
+    pub main_vault: Option<String>,
     pub settings: Settings,
     pub styles: BTreeMap<String, NoteStyle>,
     pub recent: Vec<NoteRef>,
@@ -310,6 +314,9 @@ impl Core {
                 github: None,
             };
             c.active_vault = Some(v.id.clone());
+            if c.main_vault.is_none() {
+                c.main_vault = Some(v.id.clone());
+            }
             c.vaults.push(v.clone());
             Ok(v)
         })

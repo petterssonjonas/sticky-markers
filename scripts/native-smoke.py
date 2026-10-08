@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         binary = (root/'package/usr/bin/sticky-markers').resolve()
     note = vault/'First.md'; note.write_text('# Packaged note\n\n')
     config = data/'settings.json'
-    config.write_text(json.dumps({'vaults':[{'id':'native','name':'Native smoke','path':str(vault),'github':None}], 'activeVault':'native', 'styles':{'native/First.md':{'open':True,'pinned':True,'pinnedAt':1,'mode':'edit','width':420,'height':440}}, 'settings':{'width':420,'height':440}}))
+    config.write_text(json.dumps({'vaults':[{'id':'native','name':'Native smoke','path':str(vault),'github':None}], 'activeVault':'native', 'styles':{'native/First.md':{'open':True,'pinned':True,'pinnedAt':1,'mode':'edit','width':420,'height':440}}, 'settings':{'width':420,'height':440,'mode':'view'}}))
     env = os.environ.copy()
     env.update(STICKY_MARKERS_DATA_DIR=str(data), XDG_DATA_HOME=str(root/'share'), XDG_CONFIG_HOME=str(root/'config'), XDG_CACHE_HOME=str(root/'cache'), WEBKIT_DISABLE_DMABUF_RENDERER='1')
     cmd = [str(binary)]
@@ -38,27 +38,41 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
     try:
         wait_for(lambda: windows('First.md'), 'active note did not restore')
         time.sleep(2)  # Let the embedded webview mount CodeMirror before typing.
-        assert not windows('Sticky Markers'), 'cold launch unexpectedly opened collection'
+        wait_for(lambda: windows('Sticky Markers'), 'cold launch did not show the sidebar')
+        main_win = windows('Sticky Markers')[0]
+        geometry = subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True,check=True).stdout
+        assert 'WIDTH=300' in geometry, geometry
+        subprocess.run([xdotool,'windowraise',main_win,'windowfocus',main_win,'mousemove','--window',main_win,'245','34','click','1'],check=True)
+        wait_for(lambda: 'WIDTH=1120' in subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True).stdout, 'notes panel did not expand the native window')
+        subprocess.run([xdotool,'mousemove','--window',main_win,'245','34','click','1'],check=True)
+        wait_for(lambda: 'WIDTH=300' in subprocess.run([xdotool,'getwindowgeometry','--shell',main_win],capture_output=True,text=True).stdout, 'notes panel did not collapse the native window')
+        time.sleep(2)  # Let GTK/WebKit finish resize and lazy panel mount on Xvfb.
         win = windows('First.md')[0]
-        subprocess.run([xdotool,'windowfocus',win,'mousemove','--window',win,'130','120','click','1','key','ctrl+End','type','--delay','50','--clearmodifiers','Typed into the packaged app.'], check=True)
+        subprocess.run([xdotool,'windowraise',win,'windowfocus',win,'mousemove','--window',win,'130','120','click','1'], check=True)
+        time.sleep(.25)  # Wait for WebKit's focus event after crossing webviews.
+        subprocess.run([xdotool,'key','ctrl+End','type','--delay','50','--clearmodifiers','Typed into the packaged app.'], check=True)
         subprocess.run([xdotool,'mousemove','--window',win,'402','24','click','1'], check=True)
         wait_for(lambda: 'Typed into the packaged app.' in note.read_text(), 'native edit did not reach Markdown file')
         wait_for(lambda: not json.loads(config.read_text())['styles']['native/First.md']['open'], 'Close did not tuck note')
         time.sleep(.5)
         assert app.poll() is None, 'closing last note quit the app'
         subprocess.run(cmd, env=env, check=True, timeout=15, stdout=log, stderr=log)
-        wait_for(lambda: windows('New note'), 'repeat launch did not create a draft window')
+        wait_for(lambda: windows('Sticky Markers'), 'repeat launch did not show main window')
+        assert not windows('New note'), 'repeat launch created an unwanted note'
+        main_win = windows('Sticky Markers')[0]
+        subprocess.run([xdotool,'windowraise',main_win,'windowfocus',main_win,'mousemove','--window',main_win,'120','94','click','1'],check=True)
+        wait_for(lambda: windows('New note'), 'sidebar New note did not create a draft')
         time.sleep(2)
         assert len(list(vault.iterdir())) == 1, 'blank draft created a vault file'
         draft_win = windows('New note')[0]
-        subprocess.run([xdotool,'windowfocus',draft_win,'mousemove','--window',draft_win,'402','24','click','1'], check=True)
+        subprocess.run([xdotool,'windowraise',draft_win,'windowfocus',draft_win,'mousemove','--window',draft_win,'402','24','click','1'], check=True)
         wait_for(lambda: not windows('New note'), 'blank draft did not close')
         assert len(list(vault.iterdir())) == 1, 'closing a blank draft created a file'
-        subprocess.run(cmd, env=env, check=True, timeout=15, stdout=log, stderr=log)
-        wait_for(lambda: windows('New note'), 'second draft did not open')
+        subprocess.run(cmd+['--new-note'], env=env, check=True, timeout=15, stdout=log, stderr=log)
+        wait_for(lambda: windows('New note'), 'explicit new-note command did not open a draft')
         time.sleep(2)
         draft_win = windows('New note')[0]
-        subprocess.run([xdotool,'windowfocus',draft_win,'mousemove','--window',draft_win,'130','120','click','1','type','--delay','40','--clearmodifiers','A draft saved safely.'], check=True)
+        subprocess.run([xdotool,'windowraise',draft_win,'windowfocus',draft_win,'mousemove','--window',draft_win,'130','120','click','1','type','--delay','40','--clearmodifiers','A draft saved safely.'], check=True)
         wait_for(lambda: len(list(vault.glob('*.md'))) == 2, 'typed draft was not saved')
         draft_path = next(p for p in vault.glob('*.md') if p != note)
         assert draft_path.stem == 'A_draft_saved_safely', draft_path
@@ -78,7 +92,8 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         entry = root/'share/applications/dev.stickymarkers.desktop.desktop'
         wait_for(lambda: entry.exists(), 'desktop actions were not created')
         assert 'Recent0;' in entry.read_text() and '--open-note' in entry.read_text()
-        assert 'First' in entry.read_text() and 'A_draft' not in entry.read_text(), 'launcher included an unpinned note'
+        assert 'Name=New Note\n' in entry.read_text() and '--new-note' in entry.read_text()
+        wait_for(lambda: 'First' in entry.read_text() and 'A_draft' not in entry.read_text(), 'launcher included an unpinned note')
         assert entry.stat().st_mode & 0o777 == 0o644
         if shutil.which('xprop'):
             identity = subprocess.run(['xprop','-id',windows('First.md')[0],'_GTK_APPLICATION_ID','_NET_WM_ICON'],capture_output=True,text=True,check=True).stdout
@@ -88,14 +103,14 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         # Synthetic X input must wait for that mount and use a realistic key rate.
         time.sleep(2)
         win=windows('First.md')[0]
-        subprocess.run([xdotool,'windowfocus',win,'mousemove','--window',win,'130','120','click','1','key','ctrl+End','type','--delay','50','--clearmodifiers',' Last thought before quit.'],check=True)
+        subprocess.run([xdotool,'windowraise',win,'windowfocus',win,'mousemove','--window',win,'130','120','click','1','key','ctrl+End','type','--delay','50','--clearmodifiers',' Last thought before quit.'],check=True)
         subprocess.run([xdotool,'key','ctrl+q'],check=True)
         wait_for(lambda: app.poll() is not None, 'explicit quit did not complete the save handshake')
         assert 'Last thought before quit.' in note.read_text(), 'quit lost the final typed text'
         app=subprocess.Popen(cmd,env=env,stdout=log,stderr=log)
         wait_for(lambda: windows('First.md'), 'saved active note did not restore after quit')
-        assert not windows('Sticky Markers'), 'cold launch restored the optional collection'
-        print('Native smoke passed: active-note restore, packaged editing, save-before-close, stay running with no windows, blank draft cancellation, deferred first save and naming, main/note commands, pinned desktop actions and application identity, flush-before-quit, subsequent restoration.')
+        wait_for(lambda: windows('Sticky Markers'), 'restart did not show main window')
+        print('Native smoke passed: sidebar-first main window, repeat-launch routing, active-note restore, packaged editing, save-before-close, stay running with no windows, blank draft cancellation, deferred first save and naming, main/note commands, pinned desktop actions and application identity, flush-before-quit, subsequent restoration.')
     except Exception:
         log.flush()
         print((root/'native.log').read_text(), file=sys.stderr)

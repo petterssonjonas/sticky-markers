@@ -27,6 +27,7 @@ struct Shared {
     quitting: Mutex<Option<BTreeSet<String>>>,
     abort_quit: Mutex<bool>,
     drafts: Mutex<BTreeMap<String, Draft>>,
+    library: sticky_core::library::Library,
 }
 fn label(id: &str, path: &str) -> String {
     format!(
@@ -73,9 +74,11 @@ fn show_main_page(app: &AppHandle, updates: bool) -> std::result::Result<(), Str
         ),
     )
     .title("Sticky Markers")
-    .inner_size(1120.0, 820.0)
-    .min_inner_size(620.0, 480.0)
+    .inner_size(300.0, 700.0)
+    .min_inner_size(300.0, 400.0)
     .decorations(false)
+    // Use the DOM drag events for moving selected notes between vaults.
+    .disable_drag_drop_handler()
     .build()
     .map_err(|e| e.to_string())?;
     window_icon(app, &window);
@@ -164,6 +167,7 @@ fn new_note(app: &AppHandle, core: &Core, id: Option<&str>) -> std::result::Resu
     let c = core.config().map_err(|e| e.to_string())?;
     let chosen = id
         .map(str::to_owned)
+        .or(c.main_vault)
         .or(c.active_vault)
         .or_else(|| c.vaults.first().map(|v| v.id.clone()));
     let Some(id) = chosen else {
@@ -448,6 +452,7 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
                                 let _ = w.set_title(&doc.path);
                             }
                             drop(drafts);
+                            shared.library.invalidate();
                             let _ = app.emit("notes-changed", ());
                             let _ = refresh_menu(app, core);
                             return Ok(json!(doc));
@@ -512,22 +517,108 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
             Value::Null
         }
         "list_notes" => json!(core.list(id()?)?),
+        "library_page" => json!(app.state::<Shared>().library.page(
+            core,
+            id()?,
+            a["offset"].as_u64().unwrap_or(0) as usize,
+            a["limit"].as_u64().unwrap_or(24) as usize,
+            a["sort"].as_str().unwrap_or("date"),
+            a["query"].as_str().unwrap_or(""),
+            a["pinned"].as_bool().unwrap_or(false)
+        )?),
+        "set_main_vault" => {
+            let id = id()?.to_owned();
+            core.vault(&id)?;
+            core.update_config(|c| {
+                c.main_vault = Some(id);
+                Ok(())
+            })?;
+            changed = true;
+            Value::Null
+        }
+        "main_panel" => {
+            if let Some(w) = app.get_webview_window("main") {
+                let expanded = a["expanded"].as_bool().unwrap_or(false);
+                let height = w
+                    .inner_size()
+                    .map(|s| s.height as f64 / w.scale_factor().unwrap_or(1.0))
+                    .unwrap_or(700.0);
+                w.set_size(tauri::LogicalSize::new(
+                    if expanded { 1120.0 } else { 300.0 },
+                    height,
+                ))
+                .map_err(|e| message(e.to_string()))?;
+            }
+            Value::Null
+        }
+        "editor_preferences" => {
+            core.update_config(|c| {
+                if let Some(mode) = a["mode"].as_str() {
+                    if !["edit", "view"].contains(&mode) {
+                        return Err(message("Unknown editor mode"));
+                    }
+                    c.settings.mode = mode.into();
+                }
+                if let Some(pins) = a.get("toolbarPins") {
+                    c.settings.toolbar_pins = serde_json::from_value(pins.clone())?;
+                }
+                Ok(())
+            })?;
+            changed = true;
+            Value::Null
+        }
+        "move_notes" => {
+            let notes: Vec<sticky_core::NoteRef> = serde_json::from_value(a["notes"].clone())?;
+            let destination = string(a, "destination")?;
+            if notes.len() > 100 {
+                return Err(message("Move at most 100 notes at once"));
+            }
+            for note in &notes {
+                if note.vault_id == destination {
+                    continue;
+                }
+                if let Some(w) =
+                    app.get_webview_window(&window_label(app, &note.vault_id, &note.path))
+                {
+                    w.emit("prepare-move", ())
+                        .map_err(|e| message(e.to_string()))?;
+                }
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+            while notes.iter().any(|n| {
+                n.vault_id != destination
+                    && app
+                        .get_webview_window(&window_label(app, &n.vault_id, &n.path))
+                        .is_some()
+            }) {
+                if std::time::Instant::now() >= deadline {
+                    return Err(message("A selected note could not finish saving. Resolve its save error before moving."));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            core.move_notes(&notes, destination)?;
+            changed = true;
+            Value::Null
+        }
         "search_notes" => json!(core.search(id()?, string(a, "query")?)?),
         "read_note" => json!(core.read(id()?, path()?)?),
         "import_note" => {
-            if let Some(source) = app.dialog().file().blocking_pick_file() {
-                let source = source.into_path().map_err(|e| message(e.to_string()))?;
-                let name = source
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .ok_or_else(|| message("Invalid filename"))?;
-                let content = sticky_core::read_text(&source)?;
-                let document = core.create(id()?, Some(name), &content, None)?;
+            let mut imported = Vec::new();
+            if let Some(sources) = app.dialog().file().blocking_pick_files() {
+                for source in sources {
+                    let source = source.into_path().map_err(|e| message(e.to_string()))?;
+                    let name = source
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .ok_or_else(|| message("Invalid filename"))?;
+                    let content = sticky_core::read_text(&source)?;
+                    imported.push(core.create(id()?, Some(name), &content, None)?);
+                    app.state::<Shared>().library.invalidate();
+                    let _ = app.emit("notes-changed", ());
+                }
                 changed = true;
-                json!(document)
-            } else {
-                Value::Null
             }
+            json!(imported)
         }
         "save_note" => {
             changed = true;
@@ -771,6 +862,20 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
         _ => return Err(message("Unknown operation")),
     };
     if changed {
+        if [
+            "save_note",
+            "register_vault",
+            "rename_note",
+            "delete_note",
+            "move_notes",
+            "import_note",
+            "github_create",
+            "sync_vault",
+        ]
+        .contains(&op)
+        {
+            app.state::<Shared>().library.invalidate();
+        }
         let _ = app.emit("notes-changed", ());
         let _ = refresh_menu(app, core);
     }
@@ -783,7 +888,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             let core = app.state::<Shared>().core.clone();
             if !platform::handle_args(app, &core, &args) {
-                let _ = new_note(app, &core, None);
+                let _ = show_main(app);
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -794,6 +899,7 @@ fn main() {
             quitting: Mutex::new(None),
             abort_quit: Mutex::new(false),
             drafts: Mutex::new(BTreeMap::new()),
+            library: sticky_core::library::Library::default(),
         })
         .invoke_handler(tauri::generate_handler![
             dispatch,
@@ -823,24 +929,23 @@ fn main() {
             updates::start_scheduler(app.handle());
             let args = std::env::args().collect::<Vec<_>>();
             if !platform::handle_args(app.handle(), &core, &args) {
-                let c = core.config()?;
-                let mut restored = 0;
-                if !c.vaults.is_empty() {
-                    for v in &c.vaults {
-                        for n in core.list(&v.id).unwrap_or_default() {
-                            if core.style(&v.id, &n.path)?.open
-                                && open_note(app.handle(), &core, &v.id, &n.path).is_ok()
-                            {
-                                restored += 1;
+                show_main(app.handle()).map_err(std::io::Error::other)?;
+                // Restore only recorded open notes, without scanning every vault
+                // or repeatedly parsing the configuration on the GTK thread.
+                let restore_app = app.handle().clone();
+                let restore_core = core.clone();
+                std::thread::spawn(move || {
+                    if let Ok(c) = restore_core.config() {
+                        for (key, style) in c.styles {
+                            if !style.open {
+                                continue;
+                            }
+                            if let Some((id, path)) = key.split_once('/') {
+                                let _ = open_note(&restore_app, &restore_core, id, path);
                             }
                         }
                     }
-                }
-                if c.vaults.is_empty() {
-                    show_main(app.handle()).map_err(std::io::Error::other)?;
-                } else if restored == 0 {
-                    new_note(app.handle(), &core, None).map_err(std::io::Error::other)?;
-                }
+                });
             }
             let _ = refresh_menu(app.handle(), &core);
             let handle = app.handle().clone();
@@ -932,7 +1037,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
             let core = app.state::<Shared>().core.clone();
-            let _ = new_note(app, &core, None);
+            let _ = show_main(app);
         }
         _ => {}
     });

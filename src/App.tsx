@@ -50,12 +50,15 @@ import {
   type Config,
   type Document,
   type Note,
+  type LibraryPage,
   type NoteStyle,
   type Settings,
   type Vault,
   defaultStyle,
+  mainVault,
 } from "./types";
-import { palettes, colors, fonts } from "./palettes";
+import { palettes, colors, fonts, colorNames } from "./palettes";
+import { Collection } from "./collection";
 import { UpdateNotice, UpdatePanel } from "./updates";
 import { type EditorHandle } from "./editor";
 const MarkdownEditor = lazy(() =>
@@ -64,6 +67,18 @@ const MarkdownEditor = lazy(() =>
 const Markdown = lazy(() =>
   import("./markdown").then((m) => ({ default: m.Markdown })),
 );
+
+const formattingTools = [
+  { id: "bold", label: "Bold", icon: Bold },
+  { id: "italic", label: "Italic", icon: Italic },
+  { id: "underline", label: "Underline", icon: Underline },
+  { id: "strike", label: "Strikethrough", icon: Strikethrough },
+  { id: "bullets", label: "Bullets", icon: List },
+  { id: "heading", label: "Insert heading", icon: Heading },
+  { id: "code", label: "Inline code", icon: Code2 },
+  { id: "codeblock", label: "Code block", icon: Code2 },
+  { id: "table", label: "Insert table", icon: FileText },
+];
 
 function Button({
   label,
@@ -108,6 +123,7 @@ function useDark(appearance: string) {
 export default function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [route, setRoute] = useState(location.search);
+  const [settingsTab, setSettingsTab] = useState<string | null>(null);
   const [error, setError] = useState("");
   const refresh = useCallback(async () => {
     try {
@@ -120,7 +136,16 @@ export default function App() {
     void refresh();
     const route = () => setRoute(location.search);
     window.addEventListener("popstate", route);
-    return () => window.removeEventListener("popstate", route);
+    window.addEventListener("demo-notes-changed", refresh);
+    const storage = (event: StorageEvent) => {
+      if (event.key === "sticky-markers-browser-demo-v1") void refresh();
+    };
+    window.addEventListener("storage", storage);
+    return () => {
+      window.removeEventListener("popstate", route);
+      window.removeEventListener("demo-notes-changed", refresh);
+      window.removeEventListener("storage", storage);
+    };
   }, [refresh]);
   useEffect(() => {
     if (!desktop) return;
@@ -152,441 +177,37 @@ export default function App() {
   const q = new URLSearchParams(route);
   const path = q.get("note"),
     vaultId = q.get("vault");
-  return <><UpdateNotice/>{path && vaultId ? (
-    <NoteWindow
-      key={`${vaultId}/${path}`}
-      vaultId={vaultId}
-      path={path}
-      config={config}
-      dark={dark}
-      refresh={refresh}
-    />
-  ) : (
-    <Collection config={config} refresh={refresh} dark={dark} />
-  )}</>;
-}
-
-function Collection({
-  config,
-  refresh,
-  dark,
-}: {
-  config: Config;
-  refresh: () => Promise<void>;
-  dark: boolean;
-}) {
-  const [notes, setNotes] = useState<Note[]>([]);
-  const [query, setQuery] = useState("");
-  const [error, setError] = useState("");
-  const [settings, setSettings] = useState(false);
-  const [vaultMenu, setVaultMenu] = useState(false);
-  const [filter, setFilter] = useState("all");
-  const [folder, setFolder] = useState("");
-  const [matches, setMatches] = useState<Set<string> | null>(null);
-  const [busy, setBusy] = useState(false);
-  const active =
-    config.vaults.find((v) => v.id === config.activeVault) ?? config.vaults[0];
-  const load = useCallback(async () => {
-    if (!active) {
-      setNotes([]);
-      return;
-    }
-    try {
-      setNotes(await call<Note[]>("list_notes", { vaultId: active.id }));
-      setError("");
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [active?.id]);
-  useEffect(() => {
-    void load();
-    const t = setInterval(() => void load(), 3000);
-    return () => clearInterval(t);
-  }, [load]);
-  useEffect(() => {
-    if (!active || !query.trim()) {
-      setMatches(null);
-      return;
-    }
-    let live = true;
-    const timer = setTimeout(() => {
-      void call<Note[]>("search_notes", { vaultId: active.id, query })
-        .then((found) => {
-          if (live) setMatches(new Set(found.map((n) => n.path)));
-        })
-        .catch((e) => setError(String(e)));
-    }, 180);
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [query, active?.id]);
-  useEffect(() => {
-    const listener = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n" && active) {
-        e.preventDefault();
-        void call("new_note", { vaultId: active.id }).catch((e) =>
-          setError(String(e)),
-        );
-      } else if (
-        (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "q" && desktop
-      ) {
-        e.preventDefault();
-        void call("quit");
-      } else if (
-        e.key === "/" &&
-        !(e.target instanceof HTMLInputElement) &&
-        !(e.target instanceof HTMLTextAreaElement)
-      ) {
-        e.preventDefault();
-        document.querySelector<HTMLInputElement>(".search input")?.focus();
-      }
-    };
-    window.addEventListener("keydown", listener);
-    return () => window.removeEventListener("keydown", listener);
-  }, [active?.id]);
-  const run = async (fn: () => Promise<unknown>) => {
-    try {
-      setBusy(true);
-      await fn();
-      await refresh();
-      await load();
-      setError("");
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const visible = notes.filter(
-    (n) =>
-      (matches
-        ? matches.has(n.path)
-        : `${n.title} ${n.preview} ${n.path}`
-            .toLowerCase()
-            .includes(query.toLowerCase())) &&
-      (!folder || n.path.startsWith(folder + "/")) &&
-      (filter === "all" || config.styles[`${n.vaultId}/${n.path}`]?.pinned),
-  );
   return (
-    <div className="collection">
-      <aside className="sidebar">
-        <div className="brand" data-tauri-drag-region>
-          <span className="brand-mark">
-            <Leaf size={20} />
-          </span>
-          <span>
-            sticky markers<span className="brand-dot">.</span>
-          </span>
-        </div>
-        <div className="vault-picker">
-          <button onClick={() => setVaultMenu(!vaultMenu)}>
-            <span className="vault-icon">
-              <FolderOpen size={18} />
-            </span>
-            <span>
-              <strong>{active?.name ?? "Choose a vault"}</strong>
-              <small>
-                {active?.github ? "GitHub synced" : "Your little corner"}
-              </small>
-            </span>
-            <ChevronDown size={15} />
-          </button>
-          {vaultMenu && (
-            <div className="vault-menu">
-              {config.vaults.map((v) => (
-                <button
-                  key={v.id}
-                  onClick={() => {
-                    setVaultMenu(false);
-                    void run(() => call("select_vault", { vaultId: v.id }));
-                  }}
-                >
-                  <FolderOpen size={15} />
-                  {v.name}
-                  {v.id === active?.id && <Check size={14} />}
-                </button>
-              ))}
-              <button
-                onClick={() => {
-                  setVaultMenu(false);
-                  void run(registerFolder);
-                }}
-              >
-                <Plus size={15} />
-                Open another folder
-              </button>
-              <button
-                onClick={() => {
-                  setVaultMenu(false);
-                  setSettings(true);
-                }}
-              >
-                <Github size={15} />
-                Create GitHub synced vault
-              </button>
-            </div>
-          )}
-        </div>
-        <p className="nav-label">YOUR SPACE</p>
-        <button
-          className={`nav-item ${filter === "all" ? "selected" : ""}`}
-          onClick={() => setFilter("all")}
-        >
-          <FileText size={17} />
-          All notes<span>{notes.length}</span>
-        </button>
-        <button
-          className={`nav-item ${filter === "pinned" ? "selected" : ""}`}
-          onClick={() => setFilter("pinned")}
-        >
-          <PanelLeft size={17} />
-          Pinned notes
-          <span>
-            {
-              notes.filter((n) => config.styles[`${n.vaultId}/${n.path}`]?.pinned)
-                .length
-            }
-          </span>
-        </button>
-        <div className="sidebar-note">
-          <span className="tiny-spark">✳</span>
-          <p>
-            A thought worth keeping?
-            <br />
-            Give it a little window.
-          </p>
-        </div>
-        <div className="sidebar-bottom">
-          {desktop && active && (
-            <button className="nav-item" onClick={() => void run(() => call("import_note", { vaultId: active.id }))}>
-              <Upload size={17} />Import note
-            </button>
-          )}
-          {active?.github && (
-            <button
-              className="nav-item"
-              onClick={() =>
-                void run(() => call("sync_vault", { vaultId: active.id }))
-              }
-            >
-              <RefreshCw size={17} />
-              {active.github.error ? "Sync needs attention" : "Sync now"}
-            </button>
-          )}
-          <button className="nav-item" onClick={() => setSettings(true)}>
-            <SettingsIcon size={17} />
-            Settings
-          </button>
-          <div className="local-status">
-            <span />
-            {desktop
-              ? "Saved on your device"
-              : "Browser demo · local browser storage"}
-          </div>
-        </div>
-      </aside>
-      <main className="collection-main">
-        <header className="main-header" data-tauri-drag-region>
-          <span className="breadcrumb">
-            <FolderOpen size={14} />
-            {active?.name ?? "Welcome"}
-          </span>
-          <div className="header-actions">
-            <span className="version-label">
-              A little space for your thoughts
-            </span>
-            {desktop && (
-              <Button
-                label="Close main window"
-                onClick={() => void call("hide_main")}
-              >
-                <X size={16} />
-              </Button>
-            )}
-          </div>
-        </header>
-        <section className="collection-heading">
-          <div>
-            <div className="eyebrow">THOUGHTS, PLANS & LITTLE REMINDERS</div>
-            <h1>
-              Your notes,
-              <br />
-              <span>a little closer.</span>
-            </h1>
-            <p>Out of your head. Somewhere you can find them.</p>
-          </div>
-          <button
-            className="primary new-note"
-            disabled={busy || !active}
-            onClick={() =>
-              void run(() => call("new_note", { vaultId: active!.id }))
-            }
-          >
-            <Plus size={19} />
-            New note<span>⌘ N</span>
-          </button>
-        </section>
-        {error && (
-          <div role="alert" className="error-banner">
-            {error}
-            <button onClick={() => setError("")} aria-label="Dismiss error">
-              <X size={14} />
-            </button>
-          </div>
-        )}
-        {!active ? (
-          <div className="empty-state">
-            <FolderOpen size={36} />
-            <h2>Make yourself a little space.</h2>
-            <p>
-              Choose a folder, open an Obsidian vault, or create a private
-              GitHub synced vault. Your notes stay ordinary text files.
-            </p>
-            <button
-              className="primary"
-              onClick={() => void run(registerFolder)}
-            >
-              <FolderOpen size={17} />
-              Choose a notes folder
-            </button>
-            <button className="text-button" onClick={() => setSettings(true)}>
-              Create a GitHub synced vault <ArrowRight size={15} />
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="collection-tools">
-              <div className="tabs">
-                <button
-                  className={filter === "all" ? "active" : ""}
-                  onClick={() => setFilter("all")}
-                >
-                  All notes <span>{notes.length}</span>
-                </button>
-                <button
-                  className={filter === "pinned" ? "active" : ""}
-                  onClick={() => setFilter("pinned")}
-                >
-                  Pinned notes
-                </button>
-              </div>
-              <select
-                className="folder-filter"
-                aria-label="Note folder"
-                value={folder}
-                onChange={(e) => setFolder(e.target.value)}
-              >
-                <option value="">All folders</option>
-                {Array.from(
-                  new Set(
-                    notes
-                      .map((n) => n.path.split("/").slice(0, -1).join("/"))
-                      .filter(Boolean),
-                  ),
-                )
-                  .sort()
-                  .map((f) => (
-                    <option value={f} key={f}>
-                      {f}
-                    </option>
-                  ))}
-              </select>
-              <label className="search">
-                <Search size={16} />
-                <input
-                  aria-label="Search notes"
-                  placeholder="Find a little thought…"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-                <kbd>/</kbd>
-              </label>
-            </div>
-            <div className="notes-grid">
-              {visible.map((n, i) => {
-                const s =
-                  config.styles[`${n.vaultId}/${n.path}`] ??
-                  defaultStyle(config.settings);
-                const c = colors(s.palette, s.color, dark);
-                return (
-                  <button
-                    className="note-card"
-                    style={
-                      {
-                        "--paper": c.body,
-                        "--ink": c.ink,
-                        "--rotation": `${[-0.6, 0.5, -0.35, 0.65, 0][i % 5]}deg`,
-                      } as CSSProperties
-                    }
-                    key={n.path}
-                    onClick={() =>
-                      void run(() =>
-                        call("open_note", { vaultId: n.vaultId, path: n.path }),
-                      )
-                    }
-                  >
-                    <div className="card-top">
-                      <span>
-                        {new Date(n.modified * 1000).toLocaleDateString(
-                          undefined,
-                          { month: "short", day: "numeric" },
-                        )}
-                      </span>
-                      <ArrowUpRight size={17} />
-                    </div>
-                    <h2>{n.title || "Untitled note"}</h2>
-                    <div className="card-preview"><Suspense fallback={null}>{/\.(md|markdown|mdown)$/i.test(n.path) ? <Markdown content={n.preview.replace(/^#{1,6} [^\n]*(?:\r?\n)?/, "")} dark={dark} vaultId={n.vaultId} path={n.path} onWiki={() => {}} preview /> : <pre>{n.preview}</pre>}</Suspense></div>
-                    <div className="card-bottom">
-                      <span>
-                        <FileText size={12} />
-                        {n.path.includes("/")
-                          ? n.path.split("/").slice(0, -1).join("/")
-                          : (/\.(md|markdown|mdown)$/i.test(n.path) ? "Markdown note" : "Text note")}
-                      </span>
-                      {s.pinned && <span className="open-badge"><Pin size={12}/> Pinned</span>}
-                    </div>
-                  </button>
-                );
-              })}
-              <button
-                className="add-card"
-                onClick={() =>
-                  void run(() => call("new_note", { vaultId: active.id }))
-                }
-              >
-                <span>
-                  <Plus size={24} />
-                </span>
-                <strong>A fresh little page</strong>
-                <small>What’s on your mind?</small>
-              </button>
-            </div>
-            {query && visible.length === 0 && (
-              <p className="no-results">
-                No notes match “{query}”. Try another word.
-              </p>
-            )}
-            <footer className="collection-footer">
-              <span>
-                {notes.length} little{" "}
-                {notes.length === 1 ? "thought" : "thoughts"}, safely kept.
-              </span>
-              <span>
-                Plain Markdown. Always yours. <Leaf size={13} />
-              </span>
-            </footer>
-          </>
-        )}
-      </main>
-      {settings && (
-        <SettingsDialog
+    <>
+      <UpdateNotice />
+      {path && vaultId ? (
+        <NoteWindow
+          key={`${vaultId}/${path}`}
+          vaultId={vaultId}
+          path={path}
           config={config}
-          close={() => setSettings(false)}
+          dark={dark}
           refresh={refresh}
         />
+      ) : (
+        <>
+          <Collection
+            config={config}
+            refresh={refresh}
+            dark={dark}
+            openSettings={setSettingsTab}
+          />
+          {settingsTab && (
+            <SettingsDialog
+              config={config}
+              close={() => setSettingsTab(null)}
+              refresh={refresh}
+              initialTab={settingsTab}
+            />
+          )}
+        </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -610,9 +231,11 @@ function NoteWindow({
   );
   const [menu, setMenu] = useState(false);
   const [headings, setHeadings] = useState(false);
-  const [codeMenu, setCodeMenu] = useState(false);
+
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
-  const [status, setStatus] = useState(path.startsWith("draft-") ? "Empty draft" : "Saved locally");
+  const [status, setStatus] = useState(
+    path.startsWith("draft-") ? "Empty draft" : "Saved locally",
+  );
   const [error, setError] = useState("");
   const editor = useRef<EditorHandle>(null);
   const current = useRef("");
@@ -623,21 +246,33 @@ function NoteWindow({
   styleRef.current = style;
   const closing = useRef(false);
   const [finishing, setFinishing] = useState(false);
-  const [heading, setHeading] = useState(new URLSearchParams(location.search).get("heading") ?? "");
+  const [heading, setHeading] = useState(
+    new URLSearchParams(location.search).get("heading") ?? "",
+  );
   const journalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const vault = config.vaults.find((v) => v.id === vaultId);
   const c = colors(style.palette, style.color, dark);
   const actualPath = document?.path ?? path;
-  const plain = !path.startsWith("draft-") && !/\.(md|markdown|mdown)$/i.test(actualPath);
+  const plain =
+    !path.startsWith("draft-") && !/\.(md|markdown|mdown)$/i.test(actualPath);
+  const noteMode = plain ? "edit" : config.settings.mode;
+  const destinationVault = mainVault(config)?.id;
+  const toolbarPins = config.settings.toolbarPins ?? [];
   useEffect(() => {
-    if (menu && !systemFonts.length) void call<string[]>("system_fonts").then(setSystemFonts).catch((e) => setError(String(e)));
+    if (menu && !systemFonts.length)
+      void call<string[]>("system_fonts")
+        .then(setSystemFonts)
+        .catch((e) => setError(String(e)));
   }, [menu]);
   const flush = useCallback(async () => {
     if (timer.current) {
       clearTimeout(timer.current);
       timer.current = null;
     }
-    if (journalTimer.current) { clearTimeout(journalTimer.current); journalTimer.current = null; }
+    if (journalTimer.current) {
+      clearTimeout(journalTimer.current);
+      journalTimer.current = null;
+    }
     if (pending.current) await pending.current;
     while (saved.current && current.current !== saved.current.content) {
       const content = current.current,
@@ -695,8 +330,14 @@ function NoteWindow({
           setText(d.content);
           const persistedStyle = config.styles[`${vaultId}/${d.path}`];
           if (persistedStyle) setStyle(persistedStyle);
-          else if (!/\.(md|markdown|mdown)$/i.test(d.path) && !d.path.startsWith("draft-")) setStyle((s) => ({ ...s, mode: "edit", font: "mono" }));
-          setStatus(d.path.startsWith("draft-") ? "Empty draft" : "Saved locally");
+          else if (
+            !/\.(md|markdown|mdown)$/i.test(d.path) &&
+            !d.path.startsWith("draft-")
+          )
+            setStyle((s) => ({ ...s, mode: "edit", font: "mono" }));
+          setStatus(
+            d.path.startsWith("draft-") ? "Empty draft" : "Saved locally",
+          );
         }
       })
       .catch((e) => setError(String(e)));
@@ -725,6 +366,7 @@ function NoteWindow({
           call("quit_ready", { label: getCurrentWindow().label, ok: false }),
         );
     });
+    const moveListener = listen("prepare-move", () => void close());
     const cancelListener = listen("quit-cancelled", () => {
       closing.current = false;
       setFinishing(false);
@@ -734,6 +376,7 @@ function NoteWindow({
       void closeListener.then((f) => f());
       void quitListener.then((f) => f());
       void cancelListener.then((f) => f());
+      void moveListener.then((f) => f());
     };
   }, [close, flush]);
   useEffect(() => {
@@ -772,18 +415,16 @@ function NoteWindow({
       } else if (k === "n") {
         e.preventDefault();
         void flush()
-          .then(() => call("new_note", { vaultId }))
+          .then(() => call("new_note", { vaultId: destinationVault }))
           .catch((e) => setError(String(e)));
       } else if (["b", "i", "u"].includes(k)) {
         e.preventDefault();
-        editor.current?.format(
-            { b: "bold", i: "italic", u: "underline" }[k]!,
-          );
+        editor.current?.format({ b: "bold", i: "italic", u: "underline" }[k]!);
       }
     };
     window.addEventListener("keydown", listener, true);
     return () => window.removeEventListener("keydown", listener, true);
-  }, [flush, vaultId]);
+  }, [flush, vaultId, destinationVault]);
   const change = (s: string) => {
     current.current = s;
     setText(s);
@@ -801,7 +442,7 @@ function NoteWindow({
     }, 450);
   };
   const updateStyle = async (patch: Partial<NoteStyle>) => {
-    const next = { ...styleRef.current, ...patch };
+    const next = { ...styleRef.current, ...patch, palette: "classic" };
     styleRef.current = next;
     setStyle(next);
     try {
@@ -815,19 +456,23 @@ function NoteWindow({
     if (closing.current) return;
     try {
       await flush();
-      await updateStyle({ mode: next });
+      await call("editor_preferences", { mode: next });
+      await refresh();
       setMenu(false);
     } catch {}
   };
   useEffect(() => {
-    if (heading && style.mode !== "view" && document) void mode("view");
+    if (heading && noteMode !== "view" && document) void mode("view");
   }, [heading, document?.path]);
   useEffect(() => {
     if (!desktop) return;
     const un = listen<string>("navigate-heading", (e) => {
-      setHeading(e.payload); void mode("view");
+      setHeading(e.payload);
+      void mode("view");
     });
-    return () => { void un.then((f) => f()); };
+    return () => {
+      void un.then((f) => f());
+    };
   }, [vaultId, path]);
   const format = (kind: string) => {
     if (closing.current) return;
@@ -837,7 +482,7 @@ function NoteWindow({
     if (closing.current) return;
     try {
       await flush();
-      await call("new_note", { vaultId });
+      await call("new_note", { vaultId: destinationVault });
     } catch (e) {
       setError(String(e));
     }
@@ -845,17 +490,58 @@ function NoteWindow({
   const wiki = async (target: string) => {
     try {
       const [name, anchor] = target.split("#");
-      if (!name && anchor) { setHeading(anchor); await mode("view"); return; }
-      const notes = await call<Note[]>("list_notes", { vaultId });
+      if (!name && anchor) {
+        setHeading(anchor);
+        await mode("view");
+        return;
+      }
       const filename = name.endsWith(".md") ? name : `${name}.md`;
       const relative = [...path.split("/").slice(0, -1)];
-      for (const part of filename.split("/")) { if (part === "..") relative.pop(); else if (part !== ".") relative.push(part); }
-      const found =
-        notes.find((n) => n.path === relative.join("/")) ||
-        notes.find((n) => n.path === filename) ||
-        notes.find((n) => n.path.split("/").pop() === filename);
-      if (!found) throw new Error(`No note named “${name}” in this vault.`);
-      await call("open_note", { vaultId, path: found.path, heading: anchor });
+      for (const part of filename.split("/")) {
+        if (part === "..") relative.pop();
+        else if (part !== ".") relative.push(part);
+      }
+      // Exact paths avoid both a content scan and ambiguity from incoming links.
+      for (const candidate of new Set([relative.join("/"), filename])) {
+        let exists = false;
+        try {
+          await call<Document>("read_note", { vaultId, path: candidate });
+          exists = true;
+        } catch {}
+        if (exists) {
+          await call("open_note", {
+            vaultId,
+            path: candidate,
+            heading: anchor,
+          });
+          return;
+        }
+      }
+      for (let offset = 0; ; offset += 100) {
+        const result = await call<LibraryPage>("library_page", {
+          vaultId,
+          query: name,
+          offset,
+          limit: 100,
+        });
+        const found = result.notes.find(
+          (n) => n.path.split("/").pop() === filename,
+        );
+        if (found) {
+          await call("open_note", {
+            vaultId,
+            path: found.path,
+            heading: anchor,
+          });
+          return;
+        }
+        if (
+          offset + result.notes.length >= result.total ||
+          !result.notes.length
+        )
+          break;
+      }
+      throw new Error(`No note named “${name}” in this vault.`);
     } catch (e) {
       setError(String(e));
     }
@@ -900,7 +586,9 @@ function NoteWindow({
           "--paper": c.body,
           "--header": c.header,
           "--ink": c.ink,
-          "--note-font": fonts[style.font] ?? `${JSON.stringify(style.font)}, system-ui, sans-serif`,
+          "--note-font":
+            fonts[style.font] ??
+            `${JSON.stringify(style.font)}, system-ui, sans-serif`,
           "--note-font-size": `${style.fontSize}px`,
         } as CSSProperties
       }
@@ -909,40 +597,62 @@ function NoteWindow({
         <Button label="New note" onClick={() => void newNote()}>
           <Plus size={19} />
         </Button>
-        <Button label={style.pinned ? "Unpin note" : "Pin note"} pressed={!!style.pinned} onClick={() => void updateStyle({ pinned: !style.pinned, pinnedAt: !style.pinned ? Date.now() : 0 })}><Pin size={17} /></Button>
+        <Button
+          label={style.pinned ? "Unpin note" : "Pin note"}
+          pressed={!!style.pinned}
+          onClick={() =>
+            void updateStyle({
+              pinned: !style.pinned,
+              pinnedAt: !style.pinned ? Date.now() : 0,
+            })
+          }
+        >
+          <Pin size={17} />
+        </Button>
         <div
           className="note-drag"
           data-tauri-drag-region
           title={`${vault?.name} / ${actualPath}`}
         >
-          {actualPath.startsWith("draft-") ? "New note" : actualPath.split("/").pop()?.replace(/\.(md|markdown|mdown)$/i, "")}
+          {actualPath.startsWith("draft-")
+            ? "New note"
+            : actualPath
+                .split("/")
+                .pop()
+                ?.replace(/\.(md|markdown|mdown)$/i, "")}
         </div>
-        <span className={`note-save-status ${status === "Unsaved" || status === "Not saved" || status === "Conflict" ? "save-warning" : ""}`} role="status"><span className="status-dot" />{status}</span>
         <div className="format-buttons">
-          {[
-            [Bold, "bold"],
-            [Italic, "italic"],
-            [Underline, "underline"],
-            [Strikethrough, "strike"],
-            [List, "bullets"],
-          ].map(([Icon, kind]) => {
-            const I = Icon as typeof Bold;
-            return (
-              <Button
-                key={String(kind)}
-                label={String(kind)}
-                onClick={() => format(String(kind))}
-              >
-                <I size={15} />
-              </Button>
-            );
-          })}
-          <div className="heading-control"><Button label="Insert heading" onClick={() => { setHeadings(!headings); setCodeMenu(false); }}><Heading size={15}/><ChevronDown size={10}/></Button>
-            {headings && <div className="heading-menu">{[1,2,3,4,5,6].map((n) => <button key={n} onClick={() => { format(`heading${n}`); setHeadings(false); }}>Heading {n} <span>{"#".repeat(n)}</span></button>)}</div>}
-          </div>
-          <div className="heading-control"><Button label="Insert code" onClick={() => { setCodeMenu(!codeMenu); setHeadings(false); }}><Code2 size={15}/><ChevronDown size={10}/></Button>
-            {codeMenu && <div className="heading-menu">{[["code", "Inline code"], ["codeblock", "Code block"]].map(([kind, label]) => <button key={kind} onClick={() => { format(kind); setCodeMenu(false); }}>{label}</button>)}</div>}
-          </div>
+          {formattingTools
+            .filter((tool) => toolbarPins.includes(tool.id))
+            .map(({ id, label, icon: Icon }) => (
+              <div className="heading-control" key={id}>
+                <Button
+                  label={label}
+                  onClick={() =>
+                    id === "heading" ? setHeadings(!headings) : format(id)
+                  }
+                >
+                  <Icon size={15} />
+                  {id === "heading" && <ChevronDown size={10} />}
+                </Button>
+                {id === "heading" && headings && !menu && (
+                  <div className="heading-menu">
+                    {[1, 2, 3, 4, 5, 6].map((n) => (
+                      <button
+                        key={n}
+                        onClick={() => {
+                          format(`heading${n}`);
+                          setHeadings(false);
+                        }}
+                      >
+                        Heading {n}
+                        <span>{"#".repeat(n)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
         </div>
         <Button label="Note menu" onClick={() => setMenu(!menu)}>
           <Menu size={19} />
@@ -955,53 +665,47 @@ function NoteWindow({
         <>
           <div className="menu-dismiss" onClick={() => setMenu(false)} />
           <div className="note-menu">
-            <div className="menu-vault"><FolderOpen size={13}/>{vault?.name}</div>
-            <div className="menu-save-status" role="status"><span className="status-dot"/>{status}</div>
-            <div className="menu-label">A COLOR FOR YOUR THOUGHT</div>
-            <select
-              aria-label="Color palette"
-              value={style.palette}
-              onChange={(e) => void updateStyle({ palette: e.target.value })}
-            >
-              {Object.entries(palettes).map(([id, p]) => (
-                <option value={id} key={id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+            <div className="menu-vault">
+              <FolderOpen size={13} />
+              {vault?.name}
+            </div>
+            <div className="palette-name">Classic</div>
             <div className="swatches">
-              {(dark
-                ? palettes[style.palette]?.dark
-                : palettes[style.palette]?.light
-              )?.map((color, i) => (
-                <button
-                  aria-label={`Color ${i + 1}`}
-                  aria-pressed={style.color === i}
-                  className={style.color === i ? "chosen" : ""}
-                  style={{ background: color }}
-                  key={i}
-                  onClick={() => void updateStyle({ color: i })}
-                >
-                  {style.color === i && <Check size={15} />}
-                </button>
-              ))}
+              {(dark ? palettes.classic.dark : palettes.classic.light)?.map(
+                (color, i) => (
+                  <button
+                    aria-label={`${colorNames[i % 8]} ${i < 8 ? "pastel" : "vibrant"}`}
+                    aria-pressed={style.color === i}
+                    className={style.color === i ? "chosen" : ""}
+                    style={{ background: color }}
+                    key={i}
+                    onClick={() => void updateStyle({ color: i })}
+                  >
+                    {style.color === i && <Check size={15} />}
+                  </button>
+                ),
+              )}
             </div>
             <div className="mode-switch">
               <button
-                className={style.mode === "edit" ? "active" : ""}
+                className={noteMode === "edit" ? "active" : ""}
                 onClick={() => void mode("edit")}
               >
                 <Code2 size={14} />
                 Edit
               </button>
               <button
-                className={style.mode === "view" ? "active" : ""}
+                className={noteMode === "view" ? "active" : ""}
                 disabled={plain}
-                title={plain ? "Rendered mode is available for Markdown notes" : undefined}
+                title={
+                  plain
+                    ? "Rendered mode is available for Markdown notes"
+                    : undefined
+                }
                 onClick={() => void mode("view")}
               >
                 <Eye size={14} />
-                Rendered mode
+                Rendered
               </button>
             </div>
             <div className="font-controls">
@@ -1015,8 +719,17 @@ function NoteWindow({
                   <option value="sans">Sans serif</option>
                   <option value="serif">Serif</option>
                   <option value="mono">Monospace</option>
-                  {style.font && !["sans", "serif", "mono", ...systemFonts].includes(style.font) && <option value={style.font}>{style.font}</option>}
-                  <optgroup label="System fonts">{systemFonts.map((font) => <option value={font} key={font}>{font}</option>)}</optgroup>
+                  {style.font &&
+                    !["sans", "serif", "mono", ...systemFonts].includes(
+                      style.font,
+                    ) && <option value={style.font}>{style.font}</option>}
+                  <optgroup label="System fonts">
+                    {systemFonts.map((font) => (
+                      <option value={font} key={font}>
+                        {font}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </label>
               <label>
@@ -1038,15 +751,61 @@ function NoteWindow({
                 />
               </label>
             </div>
-            <button
-              className="menu-action"
-              onClick={() => {
-                format("table");
-                setMenu(false);
-              }}
-            >
-              Insert table
-            </button>
+            <div className="format-menu">
+              {formattingTools.map(({ id, label, icon: Icon }) => (
+                <div key={id}>
+                  <div className="format-menu-row">
+                    <button
+                      className="menu-action"
+                      onClick={() => {
+                        if (id === "heading") setHeadings(!headings);
+                        else {
+                          format(id);
+                          setMenu(false);
+                        }
+                      }}
+                    >
+                      <Icon size={15} />
+                      {label}
+                      {id === "heading" && <ChevronDown size={12} />}
+                    </button>
+                    <button
+                      className="format-pin"
+                      aria-label={`${toolbarPins.includes(id) ? "Unpin" : "Pin"} ${label} to toolbar`}
+                      aria-pressed={toolbarPins.includes(id)}
+                      onClick={() =>
+                        void call("editor_preferences", {
+                          toolbarPins: toolbarPins.includes(id)
+                            ? toolbarPins.filter((p) => p !== id)
+                            : [...toolbarPins, id],
+                        })
+                          .then(refresh)
+                          .catch((e) => setError(String(e)))
+                      }
+                    >
+                      <Pin size={13} />
+                    </button>
+                  </div>
+                  {id === "heading" && headings && (
+                    <div className="heading-menu">
+                      {[1, 2, 3, 4, 5, 6].map((n) => (
+                        <button
+                          key={n}
+                          onClick={() => {
+                            format(`heading${n}`);
+                            setHeadings(false);
+                            setMenu(false);
+                          }}
+                        >
+                          Heading {n}
+                          <span>{"#".repeat(n)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
             <hr />
             <button
               className="menu-action"
@@ -1121,8 +880,26 @@ function NoteWindow({
       <div className="note-content">
         <Suspense fallback={<div className="loading">Opening your note…</div>}>
           {document ? (
-            <MarkdownEditor readOnly={finishing} ref={editor} value={text} onChange={change} dark={dark} onLink={(u) => void external(u)} rendered={style.mode === "view" && !plain} plain={plain} preview={{ dark, vaultId, path: actualPath, onWiki: (t) => void wiki(t) }} heading={heading} />
-          ) : <div className="loading">Opening your note…</div>}
+            <MarkdownEditor
+              readOnly={finishing}
+              ref={editor}
+              value={text}
+              onChange={change}
+              dark={dark}
+              onLink={(u) => void external(u)}
+              rendered={noteMode === "view" && !plain}
+              plain={plain}
+              preview={{
+                dark,
+                vaultId,
+                path: actualPath,
+                onWiki: (t) => void wiki(t),
+              }}
+              heading={heading}
+            />
+          ) : (
+            <div className="loading">Opening your note…</div>
+          )}
         </Suspense>
       </div>
       {!desktop && (
@@ -1139,13 +916,15 @@ function SettingsDialog({
   config,
   close,
   refresh,
+  initialTab = "general",
 }: {
   config: Config;
   close: () => void;
   refresh: () => Promise<void>;
+  initialTab?: string;
 }) {
   const [settings, setSettings] = useState<Settings>(config.settings);
-  const [tab, setTab] = useState("general");
+  const [tab, setTab] = useState(initialTab);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1218,7 +997,11 @@ function SettingsDialog({
     };
   }, [device, settings.githubClientId]);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
-  useEffect(() => { void call<string[]>("system_fonts").then(setSystemFonts).catch((e) => setError(String(e))); }, []);
+  useEffect(() => {
+    void call<string[]>("system_fonts")
+      .then(setSystemFonts)
+      .catch((e) => setError(String(e)));
+  }, []);
   const field = (patch: Partial<Settings>) =>
     setSettings((s) => ({ ...s, ...patch }));
   return (
@@ -1260,11 +1043,34 @@ function SettingsDialog({
           ))}
         </nav>
         <div className="settings-content">
-          {tab === "updates" && <>
-            <UpdatePanel/>
-            <label className="setting-row"><span><strong>Automatic update checks</strong><small>Check shortly after launch and every six hours.</small></span><input type="checkbox" checked={settings.checkUpdates ?? true} onChange={e=>field({checkUpdates:e.target.checked})}/></label>
-            <button className="secondary" disabled={busy} onClick={()=>void run(()=>call("set_settings",{settings}),"Update preferences saved.")}>Save update preferences</button>
-          </>}
+          {tab === "updates" && (
+            <>
+              <UpdatePanel />
+              <label className="setting-row">
+                <span>
+                  <strong>Automatic update checks</strong>
+                  <small>Check shortly after launch and every six hours.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={settings.checkUpdates ?? true}
+                  onChange={(e) => field({ checkUpdates: e.target.checked })}
+                />
+              </label>
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() =>
+                  void run(
+                    () => call("set_settings", { settings }),
+                    "Update preferences saved.",
+                  )
+                }
+              >
+                Save update preferences
+              </button>
+            </>
+          )}
           {error && (
             <div className="error-banner" role="alert">
               {error}
@@ -1293,8 +1099,11 @@ function SettingsDialog({
               </label>
               <label className="setting-row">
                 <span>
-                  <strong>New notes open in</strong>
-                  <small>Both modes are editable. Rendered mode previews Markdown as you type.</small>
+                  <strong>Editor mode (all Markdown notes)</strong>
+                  <small>
+                    Changing this updates every Markdown note window. Other text
+                    formats stay in source mode.
+                  </small>
                 </span>
                 <select
                   value={settings.mode}
@@ -1302,8 +1111,8 @@ function SettingsDialog({
                     field({ mode: e.target.value as Settings["mode"] })
                   }
                 >
-                  <option value="edit">Edit mode</option>
-                  <option value="view">Rendered mode</option>
+                  <option value="edit">Edit</option>
+                  <option value="view">Rendered</option>
                 </select>
               </label>
               <div className="setting-row">
@@ -1332,19 +1141,6 @@ function SettingsDialog({
                 </div>
               </div>
               <label className="setting-row">
-                <strong>Default palette</strong>
-                <select
-                  value={settings.palette}
-                  onChange={(e) => field({ palette: e.target.value })}
-                >
-                  {Object.entries(palettes).map(([id, p]) => (
-                    <option value={id} key={id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="setting-row">
                 <strong>Default font</strong>
                 <select
                   value={settings.font}
@@ -1353,8 +1149,17 @@ function SettingsDialog({
                   <option value="sans">Sans serif</option>
                   <option value="serif">Serif</option>
                   <option value="mono">Monospace</option>
-                  {settings.font && !["sans", "serif", "mono", ...systemFonts].includes(settings.font) && <option value={settings.font}>{settings.font}</option>}
-                  <optgroup label="System fonts">{systemFonts.map((font) => <option key={font} value={font}>{font}</option>)}</optgroup>
+                  {settings.font &&
+                    !["sans", "serif", "mono", ...systemFonts].includes(
+                      settings.font,
+                    ) && <option value={settings.font}>{settings.font}</option>}
+                  <optgroup label="System fonts">
+                    {systemFonts.map((font) => (
+                      <option key={font} value={font}>
+                        {font}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </label>
               <label className="setting-row">
@@ -1368,8 +1173,8 @@ function SettingsDialog({
                 />
               </label>
               <p className="settings-help">
-                Defaults apply to new notes. Existing notes keep their own
-                style.
+                Font and size defaults apply to new notes. Editor mode and
+                pinned formatting tools apply to every note.
               </p>
               <button
                 className="text-button"
@@ -1387,6 +1192,20 @@ function SettingsDialog({
                   <FolderOpen size={18} />
                   <div>
                     <strong>{v.name}</strong>
+                    <button
+                      className="text-button"
+                      aria-pressed={mainVault(config)?.id === v.id}
+                      onClick={() =>
+                        void run(() =>
+                          call("set_main_vault", { vaultId: v.id }),
+                        )
+                      }
+                    >
+                      <Pin size={13} />
+                      {mainVault(config)?.id === v.id
+                        ? "Main vault"
+                        : "Set as main vault"}
+                    </button>
                     <small>{v.path}</small>
                     <small>
                       {v.github

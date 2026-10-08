@@ -9,6 +9,7 @@ import {
   type NoteStyle,
   type Settings,
   type Vault,
+  type LibraryEntry,
 } from "./types";
 
 export const desktop = isTauri();
@@ -28,10 +29,15 @@ const samples: Record<string, string> = {
 interface Demo {
   config: Config;
   files: Record<string, string>;
+  vaultFiles?: Record<string, Record<string, string>>;
 }
 function load(): Demo {
   const saved = localStorage.getItem(key);
-  if (saved) return JSON.parse(saved) as Demo;
+  if (saved) {
+    const d = JSON.parse(saved) as Demo;
+    d.config.settings = { ...defaults, ...d.config.settings };
+    return d;
+  }
   const config: Config = {
     vaults: [
       {
@@ -81,9 +87,19 @@ function navigate(vaultId?: string, path?: string) {
 }
 const drafts = new Map<string, { path?: string; style?: NoteStyle }>();
 function autoName(content: string, files: Record<string, string>) {
-  const stem = (content.split("\n").find((line) => line.trim()) ?? "Note").split(/[^\p{L}\p{N}]+/u).filter(Boolean).join("_").slice(0, 20).replace(/_+$/, "") || "Note";
-  let path = `${stem}.md`, i = 2;
-  while (path in files) { const suffix = `_${i++}`; path = `${stem.slice(0, 20 - suffix.length)}${suffix}.md`; }
+  const stem =
+    (content.split("\n").find((line) => line.trim()) ?? "Note")
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean)
+      .join("_")
+      .slice(0, 20)
+      .replace(/_+$/, "") || "Note";
+  let path = `${stem}.md`,
+    i = 2;
+  while (path in files) {
+    const suffix = `_${i++}`;
+    path = `${stem.slice(0, 20 - suffix.length)}${suffix}.md`;
+  }
   return path;
 }
 async function demoCall<T>(
@@ -91,29 +107,108 @@ async function demoCall<T>(
   args: Record<string, unknown>,
 ): Promise<T> {
   const d = load();
-  const id = String(args.vaultId ?? "demo");
+  const id = String(
+    args.vaultId ?? d.config.mainVault ?? d.config.activeVault ?? "demo",
+  );
+  const files = id === "demo" ? d.files : ((d.vaultFiles ??= {})[id] ??= {});
   let path = String(args.path ?? "");
   const draft = drafts.get(path);
   if (draft?.path) path = draft.path;
   let out: unknown = null;
   const doc = async (p: string): Promise<Document> => {
-    if (!(p in d.files)) {
-      if (drafts.has(p)) return { vaultId: id, path: p, content: "", revision: await hash("") };
+    if (!(p in files)) {
+      if (drafts.has(p))
+        return { vaultId: id, path: p, content: "", revision: await hash("") };
       throw new Error("Note no longer exists");
     }
     return {
       vaultId: id,
       path: p,
-      content: d.files[p],
-      revision: await hash(d.files[p]),
+      content: files[p],
+      revision: await hash(files[p]),
     };
   };
   switch (operation) {
     case "bootstrap":
       out = d.config;
       break;
+    case "library_page": {
+      const q = String(args.query ?? "").toLowerCase();
+      const entries = Object.entries(files)
+        .map(
+          ([path, content], i): LibraryEntry => ({
+            vaultId: id,
+            path,
+            title: path.split("/").pop()!,
+            modified: 1700000000 - i * 3600,
+            size: new TextEncoder().encode(content).length,
+            kind: path.split(".").pop()?.toLowerCase() ?? "",
+          }),
+        )
+        .filter(
+          (n) =>
+            (n.path.toLowerCase().includes(q) ||
+              files[n.path].toLowerCase().includes(q)) &&
+            (!args.pinned || d.config.styles[`${id}/${n.path}`]?.pinned),
+        );
+      entries.sort((a, b) =>
+        args.sort === "name"
+          ? a.title.localeCompare(b.title)
+          : args.sort === "size"
+            ? b.size - a.size
+            : args.sort === "type"
+              ? a.kind.localeCompare(b.kind)
+              : b.modified - a.modified,
+      );
+      const offset = Number(args.offset ?? 0),
+        limit = Number(args.limit ?? 24);
+      out = {
+        total: entries.length,
+        notes: entries.slice(offset, offset + limit),
+      };
+      break;
+    }
+    case "main_panel":
+      break;
+    case "set_main_vault":
+      d.config.mainVault = id;
+      break;
+    case "editor_preferences":
+      if (args.mode) d.config.settings.mode = args.mode as Settings["mode"];
+      if (args.toolbarPins)
+        d.config.settings.toolbarPins = args.toolbarPins as string[];
+      break;
+    case "move_notes": {
+      const destination = String(args.destination),
+        refs = args.notes as { vaultId: string; path: string }[];
+      const target =
+        destination === "demo"
+          ? d.files
+          : ((d.vaultFiles ??= {})[destination] ??= {});
+      const names = new Set<string>();
+      for (const n of refs) {
+        if (n.vaultId === destination) continue;
+        if (n.path in target || names.has(n.path))
+          throw new Error("A note already exists at the target path");
+        names.add(n.path);
+      }
+      for (const n of refs) {
+        if (n.vaultId === destination) continue;
+        const source =
+          n.vaultId === "demo" ? d.files : d.vaultFiles![n.vaultId];
+        target[n.path] = source[n.path];
+        delete source[n.path];
+        const old = `${n.vaultId}/${n.path}`,
+          next = `${destination}/${n.path}`;
+        if (d.config.styles[old]) {
+          d.config.styles[next] = d.config.styles[old];
+          delete d.config.styles[old];
+        }
+      }
+      break;
+    }
     case "list_notes":
-      out = Object.entries(d.files).map(
+      out = Object.entries(files).map(
         ([p, s], i): Note => ({
           vaultId: id,
           path: p,
@@ -128,7 +223,7 @@ async function demoCall<T>(
       );
       break;
     case "search_notes":
-      out = Object.entries(d.files)
+      out = Object.entries(files)
         .filter(([p, s]) =>
           (p + s).toLowerCase().includes(String(args.query).toLowerCase()),
         )
@@ -150,19 +245,28 @@ async function demoCall<T>(
       out = await doc(path);
       break;
     case "save_note": {
-      if (new TextEncoder().encode(String(args.content)).length > 100 * 1024) throw new Error("Note exceeds the 100 KiB editing limit");
+      if (new TextEncoder().encode(String(args.content)).length > 100 * 1024)
+        throw new Error("Note exceeds the 100 KiB editing limit");
       if (draft && !draft.path && String(args.content)) {
-        draft.path = autoName(String(args.content), d.files);
+        draft.path = autoName(String(args.content), files);
         path = draft.path;
-        d.files[path] = "";
-        d.config.styles[`${id}/${path}`] = { ...defaults, open: true, pinned: false, pinnedAt: 0, x: null, y: null, ...draft.style };
+        files[path] = "";
+        d.config.styles[`${id}/${path}`] = {
+          ...defaults,
+          open: true,
+          pinned: false,
+          pinnedAt: 0,
+          x: null,
+          y: null,
+          ...draft.style,
+        };
       }
       const n = await doc(path);
       if (n.revision !== args.expected)
         throw new Error(
           "Conflict: note changed. Your unsaved text is still in this window.",
         );
-      d.files[path] = String(args.content);
+      files[path] = String(args.content);
       out = await doc(path);
       break;
     }
@@ -177,15 +281,21 @@ async function demoCall<T>(
     case "open_note":
       navigate(id, path);
       if (args.heading) {
-        const q = new URL(location.href); q.searchParams.set("heading", String(args.heading));
-        history.replaceState(null, "", q); window.dispatchEvent(new PopStateEvent("popstate"));
+        const q = new URL(location.href);
+        q.searchParams.set("heading", String(args.heading));
+        history.replaceState(null, "", q);
+        window.dispatchEvent(new PopStateEvent("popstate"));
       }
       return null as T;
     case "show_main":
       navigate();
       return null as T;
     case "tuck_note":
-      if (draft && !draft.path) { drafts.delete(String(args.path)); navigate(); return null as T; }
+      if (draft && !draft.path) {
+        drafts.delete(String(args.path));
+        navigate();
+        return null as T;
+      }
       d.config.styles[`${id}/${path}`] = {
         ...d.config.styles[`${id}/${path}`],
         open: false,
@@ -194,16 +304,16 @@ async function demoCall<T>(
       navigate();
       return null as T;
     case "delete_note":
-      delete d.files[path];
+      delete files[path];
       persist(d);
       navigate();
       return null as T;
     case "rename_note": {
       const target = String(args.newPath);
-      if (target in d.files)
+      if (target in files)
         throw new Error("A note already exists at that path");
-      d.files[target] = d.files[path];
-      delete d.files[path];
+      files[target] = files[path];
+      delete files[path];
       d.config.styles[`${id}/${target}`] = d.config.styles[`${id}/${path}`];
       delete d.config.styles[`${id}/${path}`];
       persist(d);
@@ -233,7 +343,21 @@ async function demoCall<T>(
         "This feature needs the installed desktop app. The browser is a UI demo.",
       );
   }
-  persist(d);
+  if (
+    ![
+      "bootstrap",
+      "library_page",
+      "list_notes",
+      "search_notes",
+      "read_note",
+      "system_fonts",
+      "recovery_path",
+      "main_panel",
+    ].includes(operation)
+  ) {
+    persist(d);
+    window.dispatchEvent(new Event("demo-notes-changed"));
+  }
   return out as T;
 }
 export function call<T>(

@@ -27,6 +27,7 @@ export interface Settings {
   fontSize: number;
   githubClientId: string;
   checkUpdates: boolean;
+  toolbarPins: string[];
 }
 export interface NoteStyle {
   palette: string;
@@ -58,6 +59,7 @@ export interface Document extends NoteRef {
 export interface Config {
   vaults: Vault[];
   activeVault: string | null;
+  mainVault?: string | null;
   settings: Settings;
   styles: Record<string, NoteStyle>;
   recent: NoteRef[];
@@ -73,7 +75,33 @@ export const defaults: Settings = {
   fontSize: 16,
   githubClientId: "",
   checkUpdates: true,
+  toolbarPins: [],
 };
 export function defaultStyle(settings: Settings): NoteStyle {
-  return { ...settings, open: false, pinned: false, pinnedAt: 0, x: null, y: null };
+  return {
+    ...settings,
+    open: false,
+    pinned: false,
+    pinnedAt: 0,
+    x: null,
+    y: null,
+  };
+}
+
+export interface LibraryEntry extends NoteRef {
+  title: string;
+  modified: number;
+  size: number;
+  kind: string;
+}
+export interface LibraryPage {
+  notes: LibraryEntry[];
+  total: number;
+}
+export function mainVault(config: Config) {
+  return (
+    config.vaults.find(
+      (v) => v.id === (config.mainVault ?? config.activeVault),
+    ) ?? config.vaults[0]
+  );
 }

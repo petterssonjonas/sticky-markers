@@ -66,7 +66,7 @@ mod linux_menu {
             .enumerate()
             .map(|(i, _)| format!("Recent{i};"))
             .collect::<String>();
-        let mut content=format!("[Desktop Entry]\nType=Application\nName=Sticky Markers\nComment=Markdown sticky notes\nExec={exe}\nIcon={}\nTerminal=false\nCategories=Utility;Office;\nStartupWMClass=dev.stickymarkers.desktop\nX-StickyMarkers-Owned=true\nActions=Main;New;{actions}\n\n[Desktop Action Main]\nName=Open Main Window\nExec={exe} --main\n\n[Desktop Action New]\nName=New Note\nExec={exe}\n",icon.display());
+        let mut content=format!("[Desktop Entry]\nType=Application\nName=Sticky Markers\nComment=Markdown sticky notes\nExec={exe}\nIcon={}\nTerminal=false\nCategories=Utility;Office;\nStartupWMClass=dev.stickymarkers.desktop\nX-StickyMarkers-Owned=true\nActions=Main;New;{actions}\n\n[Desktop Action Main]\nName=Open Main Window\nExec={exe} --main\n\n[Desktop Action New]\nName=New Note\nExec={exe} --new-note\n",icon.display());
         for (i, n) in recent.iter().enumerate() {
             let title = n.path.trim_end_matches(".md").replace(['\n', '\r'], " ");
             content.push_str(&format!(
@@ -92,6 +92,10 @@ mod linux_menu {
 pub fn handle_args(app: &AppHandle, core: &Core, args: &[String]) -> bool {
     if args.iter().any(|s| s == "--main") {
         let _ = super::show_main(app);
+        return true;
+    }
+    if args.iter().any(|s| s == "--new-note") {
+        let _ = super::new_note(app, core, None);
         return true;
     }
     if let Some(i) = args.iter().position(|s| s == "--open-note") {

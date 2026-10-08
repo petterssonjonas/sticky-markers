@@ -1,96 +1,682 @@
 import { createRoot, type Root } from "react-dom/client";
-import { StateField, StateEffect, EditorSelection, Prec, type EditorState, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
+import { useState } from "react";
+import {
+  StateField,
+  StateEffect,
+  EditorSelection,
+  Prec,
+  type EditorState,
+  type Extension,
+  type Range,
+} from "@codemirror/state";
+import {
+  Decoration,
+  EditorView,
+  WidgetType,
+  keymap,
+  type DecorationSet,
+} from "@codemirror/view";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkFrontmatter from "remark-frontmatter";
 import { Markdown } from "./markdown";
-
-const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkFrontmatter);
-export interface PreviewOptions { dark: boolean; vaultId: string; path: string; onWiki: (target: string) => void }
+import { external } from "./api";
+const parser = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(remarkMath)
+  .use(remarkFrontmatter);
+type Node = ReturnType<typeof parser.parse>["children"][number] & {
+  children?: Node[];
+  depth?: number;
+  lang?: string;
+  url?: string;
+  value?: string;
+  identifier?: string;
+  label?: string;
+};
+export interface PreviewOptions {
+  dark: boolean;
+  vaultId: string;
+  path: string;
+  onWiki: (target: string) => void;
+}
 const focusEffect = StateEffect.define<boolean>();
-class Block extends WidgetType {
-  private root?: Root;
-  constructor(readonly source: string, readonly from: number, readonly options: PreviewOptions, readonly metadata: boolean) { super(); }
-  eq(other: Block) { return this.source === other.source && this.options.dark === other.options.dark && this.options.path === other.options.path && this.options.vaultId === other.options.vaultId; }
+const bounds = (n: Node) => ({
+  from: n.position!.start.offset!,
+  to: n.position!.end.offset!,
+});
+
+class Marker extends WidgetType {
+  constructor(
+    readonly text: string,
+    readonly className = "lp-marker",
+    readonly checkPosition?: number,
+    readonly checked = false,
+  ) {
+    super();
+  }
+  eq(other: Marker) {
+    return (
+      this.text === other.text &&
+      this.className === other.className &&
+      this.checked === other.checked &&
+      this.checkPosition === other.checkPosition
+    );
+  }
   toDOM(view: EditorView) {
-    const host = document.createElement("div"); host.className = "live-preview-block";
-    host.addEventListener("mousedown", (event) => {
-      if ((event.target as HTMLElement).closest("a, button, input, summary")) return;
-      event.preventDefault();
-      view.dispatch({ selection: { anchor: Math.min(view.posAtDOM(host), view.state.doc.length) }, effects: focusEffect.of(true) });
-      view.focus();
-    });
+    const span = document.createElement("span");
+    span.className = this.className;
+    span.textContent = this.text;
+    if (this.checkPosition !== undefined) {
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = this.checked;
+      input.tabIndex = -1;
+      input.setAttribute("aria-label", "Toggle task");
+      input.addEventListener("mousedown", (e) => e.preventDefault());
+      input.addEventListener("change", () => {
+        if (view.state.readOnly) return;
+        view.dispatch({
+          changes: {
+            from: this.checkPosition!,
+            to: this.checkPosition! + 1,
+            insert: this.checked ? " " : "x",
+          },
+        });
+      });
+      span.replaceChildren(input);
+    }
+    return span;
+  }
+  ignoreEvent() {
+    return this.checkPosition !== undefined;
+  }
+}
+class Render extends WidgetType {
+  private root?: Root;
+  constructor(
+    readonly source: string,
+    readonly options: PreviewOptions,
+    readonly className = "lp-inline-render",
+  ) {
+    super();
+  }
+  eq(other: Render) {
+    return (
+      this.source === other.source &&
+      this.options.dark === other.options.dark &&
+      this.options.path === other.options.path &&
+      this.options.vaultId === other.options.vaultId
+    );
+  }
+  toDOM() {
+    const host = document.createElement("span");
+    host.className = this.className;
     this.root = createRoot(host);
-    this.root.render(this.metadata ? <span className="frontmatter-hint">Note metadata · click to edit</span> : <Markdown content={this.source} {...this.options} />);
+    this.root.render(<Markdown content={this.source} {...this.options} />);
     return host;
   }
-  destroy() { const root = this.root; queueMicrotask(() => root?.unmount()); }
-  ignoreEvent() { return true; }
+  destroy() {
+    const root = this.root;
+    queueMicrotask(() => root?.unmount());
+  }
+  ignoreEvent() {
+    return true;
+  }
 }
-function visibleBlocks(tree: ReturnType<typeof parser.parse>, selection: { from: number; to: number }, focused: boolean) {
-  return tree.children.filter((node) => {
-    const start = node.position?.start.offset, end = node.position?.end.offset;
-    return start !== undefined && end !== undefined && (!focused || (selection.to < start || selection.from > end));
-  });
-}
-export function previewRanges(source: string, selection: { from: number; to: number }, focused: boolean) { return visibleBlocks(parser.parse(source), selection, focused); }
-export function livePreview(options: PreviewOptions): Extension {
-  const decorate = (state: EditorState, focused: boolean, tree: ReturnType<typeof parser.parse>): DecorationSet => {
-    const source = state.doc.toString();
-    // Reference definitions are shared across blocks, preserving Markdown links/footnotes.
-    const definitions = tree.children.filter((n) => n.type === "definition" || n.type === "footnoteDefinition").map((n) => source.slice(n.position!.start.offset, n.position!.end.offset)).join("\n\n");
-    return Decoration.set(visibleBlocks(tree, state.selection.main, focused).map((node) => {
-      const from = node.position!.start.offset!, to = node.position!.end.offset!;
-      const content = source.slice(from, to) + (definitions ? `\n\n${definitions}` : "");
-      return Decoration.replace({ block: true, widget: new Block(content, from, options, node.type === "yaml" || String(node.type) === "toml") }).range(from, to);
-    }), true);
+
+function TableCell({
+  source,
+  from,
+  to,
+  view,
+  options,
+}: {
+  source: string;
+  from: number;
+  to: number;
+  view: EditorView;
+  options: PreviewOptions;
+}) {
+  const [editing, setEditing] = useState(false),
+    [value, setValue] = useState(source.trim());
+  const commit = () => {
+    setEditing(false);
+    if (view.state.readOnly || value === source.trim()) return;
+    // Keep the pipe syntax and spacing around the cell; edit only its value.
+    const left = source.match(/^\s*/)?.[0] ?? "",
+      right = source.match(/\s*$/)?.[0] ?? "";
+    const insert =
+      left + value.replace(/(?<!\\)\|/g, "\\|").replace(/[\r\n]/g, " ") + right;
+    view.dispatch({ changes: { from, to, insert } });
   };
-  const field = StateField.define<{ decorations: DecorationSet; focused: boolean; tree: ReturnType<typeof parser.parse> }>({
-    create(state) { const tree = parser.parse(state.doc.toString()); return { decorations: decorate(state, true, tree), focused: true, tree }; },
-    update(value, transaction) {
-      let focused = value.focused;
-      for (const effect of transaction.effects) {
-        if (effect.is(focusEffect)) focused = effect.value;
+  return editing ? (
+    <input
+      aria-label="Edit table cell"
+      autoFocus
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") setEditing(false);
+      }}
+    />
+  ) : (
+    <div
+      tabIndex={0}
+      className="lp-table-cell"
+      onClick={() => {
+        if (!view.state.readOnly) setEditing(true);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !view.state.readOnly) setEditing(true);
+      }}
+    >
+      <Markdown content={source.trim()} {...options} />
+    </div>
+  );
+}
+class Table extends WidgetType {
+  private root?: Root;
+  constructor(
+    readonly source: string,
+    readonly node: Node,
+    readonly options: PreviewOptions,
+  ) {
+    super();
+  }
+  eq(other: Table) {
+    return (
+      this.source === other.source &&
+      bounds(this.node).from === bounds(other.node).from &&
+      this.options.dark === other.options.dark
+    );
+  }
+  toDOM(view: EditorView) {
+    const host = document.createElement("div");
+    host.className = "live-preview-block lp-table";
+    const all = view.state.doc.toString();
+    this.root = createRoot(host);
+    this.root.render(
+      <div className="markdown-body">
+        <table>
+          <tbody>
+            {this.node.children?.map((row, i) => (
+              <tr key={i}>
+                {row.children?.map((cell, j) => {
+                  let { from, to } = bounds(cell);
+                  if (all[from] === "|") from++;
+                  if (
+                    j === (row.children?.length ?? 0) - 1 &&
+                    all[to - 1] === "|" &&
+                    all[to - 2] !== "\\"
+                  )
+                    to--;
+                  const props = {
+                    source: all.slice(from, to),
+                    from,
+                    to,
+                    view,
+                    options: this.options,
+                  };
+                  return i === 0 ? (
+                    <th key={j}>
+                      <TableCell {...props} />
+                    </th>
+                  ) : (
+                    <td key={j}>
+                      <TableCell {...props} />
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>,
+    );
+    return host;
+  }
+  destroy() {
+    const root = this.root;
+    queueMicrotask(() => root?.unmount());
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+/** Rows, rather than AST sections, reveal their source when selected. */
+export function activeLines(
+  source: string,
+  selection: { from: number; to: number },
+  focused: boolean,
+) {
+  if (!focused) return [];
+  const lines = source.split("\n");
+  let offset = 0;
+  const active: number[] = [];
+  lines.forEach((line, i) => {
+    const end = offset + line.length;
+    if (selection.to >= offset && selection.from <= end) active.push(i + 1);
+    offset = end + 1;
+  });
+  return active;
+}
+export function livePreview(options: PreviewOptions): Extension {
+  const decorate = (
+    state: EditorState,
+    focused: boolean,
+    tree: ReturnType<typeof parser.parse>,
+  ) => {
+    const decorations: Range<Decoration>[] = [];
+    const atomics: Range<Decoration>[] = [];
+    const source = state.doc.toString();
+    const definitionNodes = tree.children.filter(
+      (n) => n.type === "definition",
+    ) as Node[];
+    const definitionSource = definitionNodes
+      .map((n) => source.slice(bounds(n).from, bounds(n).to))
+      .join("\n\n");
+    const definitions = new Map(
+      definitionNodes.map((n) => [
+        (n.identifier ?? n.label ?? "").toLowerCase(),
+        n.url ?? "",
+      ]),
+    );
+    const active = new Set(activeLines(source, state.selection.main, focused));
+    const lineClasses = new Map<number, Set<string>>();
+    const hidden: { from: number; to: number }[] = [];
+    const styleLine = (number: number, className: string) => {
+      const classes = lineClasses.get(number) ?? new Set();
+      classes.add(className);
+      lineClasses.set(number, classes);
+    };
+    const replace = (from: number, to: number, widget?: WidgetType) => {
+      if (to <= from || from < 0 || to > state.doc.length) return;
+      const first = state.doc.lineAt(from),
+        last = state.doc.lineAt(Math.max(from, to - 1));
+      // Split syntax spanning rows so selecting one row never reveals its siblings.
+      for (let n = first.number; n <= last.number; n++) {
+        if (active.has(n)) continue;
+        const line = state.doc.line(n),
+          a = Math.max(from, line.from),
+          b = Math.min(to, line.to);
+        if (b > a && !hidden.some((r) => a < r.to && b > r.from)) {
+          decorations.push(
+            Decoration.replace(widget ? { widget } : {}).range(a, b),
+          );
+          hidden.push({ from: a, to: b });
+        }
       }
-      if (transaction.docChanged || transaction.selection || focused !== value.focused) {
-        const tree = transaction.docChanged ? parser.parse(transaction.state.doc.toString()) : value.tree;
-        return { decorations: decorate(transaction.state, focused, tree), focused, tree };
+    };
+    const mark = (
+      from: number,
+      to: number,
+      className: string,
+      attributes?: Record<string, string>,
+    ) => {
+      if (to > from)
+        decorations.push(
+          Decoration.mark({ class: className, attributes }).range(from, to),
+        );
+    };
+    const visit = (node: Node, inCode = false) => {
+      if (!node.position) return;
+      const { from, to } = bounds(node);
+      const first = state.doc.lineAt(from),
+        last = state.doc.lineAt(Math.max(from, to - 1));
+      if (node.type === "table") {
+        const d = Decoration.replace({
+          block: true,
+          widget: new Table(source.slice(from, to), node, options),
+        }).range(from, to);
+        decorations.push(d);
+        atomics.push(d);
+        return;
+      }
+      if (node.type === "code") {
+        for (let n = first.number; n <= last.number; n++)
+          styleLine(n, "lp-code-line");
+        const fenced = /^\s*(`{3,}|~{3,})/.test(first.text);
+        if (fenced) {
+          replace(first.from, first.to);
+          if (/^\s*(`{3,}|~{3,})\s*$/.test(last.text))
+            replace(last.from, last.to);
+        }
+        if (node.lang === "mermaid")
+          decorations.push(
+            Decoration.widget({
+              block: true,
+              side: 1,
+              widget: new Render(
+                source.slice(from, to),
+                options,
+                "live-preview-block lp-diagram",
+              ),
+            }).range(last.to),
+          );
+        return;
+      }
+      if (node.type === "heading") {
+        styleLine(first.number, `lp-heading lp-h${node.depth}`);
+        const prefix = first.text.match(/^\s{0,3}#{1,6}\s+/);
+        if (prefix) replace(first.from, first.from + prefix[0].length);
+        if (last.number > first.number && /^\s*(=+|-+)\s*$/.test(last.text))
+          replace(last.from, last.to);
+      }
+      if (node.type === "listItem") {
+        for (let n = first.number; n <= last.number; n++)
+          styleLine(n, "lp-list-line");
+        const prefix = first.text.match(/^(\s*)([-+*]|\d+[.)])\s+/);
+        if (prefix) {
+          const at = first.from + prefix[1].length;
+          if (/^[-+*]$/.test(prefix[2]))
+            replace(at, at + 1, new Marker("•", "lp-bullet"));
+          const task = first.text.slice(prefix[0].length).match(/^\[([ xX])\]/);
+          if (task) {
+            const at = first.from + prefix[0].length;
+            replace(
+              at,
+              at + 3,
+              new Marker("", "lp-task", at + 1, task[1].toLowerCase() === "x"),
+            );
+          }
+        }
+      }
+      if (node.type === "blockquote")
+        for (let n = first.number; n <= last.number; n++) {
+          const line = state.doc.line(n),
+            m = line.text.match(/^\s*>/);
+          if (m)
+            replace(
+              line.from + m[0].length - 1,
+              line.from + m[0].length,
+              new Marker("│", "lp-quote"),
+            );
+        }
+      if (["strong", "emphasis", "delete"].includes(node.type)) {
+        const children = node.children ?? [];
+        if (children.length) {
+          const a = bounds(children[0]).from,
+            b = bounds(children[children.length - 1]).to;
+          replace(from, a);
+          replace(b, to);
+          mark(
+            a,
+            b,
+            (
+              {
+                strong: "lp-strong",
+                emphasis: "lp-emphasis",
+                delete: "lp-strike",
+              } as Record<string, string>
+            )[node.type],
+          );
+        }
+      }
+      if (node.type === "inlineCode") {
+        const raw = source.slice(from, to),
+          prefix = raw.match(/^`+/)?.[0].length ?? 1;
+        replace(from, from + prefix);
+        replace(to - prefix, to);
+        mark(from + prefix, to - prefix, "lp-code");
+      }
+      if (node.type === "link" || node.type === "linkReference") {
+        const children = node.children ?? [];
+        if (children.length) {
+          const a = bounds(children[0]).from,
+            b = bounds(children[children.length - 1]).to;
+          replace(from, a);
+          replace(b, to);
+          mark(a, b, "lp-link", {
+            "data-href":
+              node.url ??
+              definitions.get(
+                (node.identifier ?? node.label ?? "").toLowerCase(),
+              ) ??
+              "",
+          });
+        }
+      }
+      if (node.type === "image" || node.type === "imageReference") {
+        // Keep the image in place while its one source row is being edited.
+        replace(from, to);
+        decorations.push(
+          Decoration.widget({
+            side: 1,
+            widget: new Render(
+              source.slice(from, to) +
+                (definitionSource ? `\n\n${definitionSource}` : ""),
+              options,
+              "lp-image",
+            ),
+          }).range(last.to),
+        );
+        return;
+      }
+      if (node.type === "footnoteReference")
+        replace(
+          from,
+          to,
+          new Marker(node.label ?? node.identifier ?? "*", "lp-footnote"),
+        );
+      if (
+        node.type === "html" &&
+        /^<(script|style|iframe)\b/i.test(source.slice(from, to))
+      )
+        replace(from, to);
+      if (node.type === "inlineMath")
+        replace(from, to, new Render(source.slice(from, to), options));
+      if (node.type === "math") {
+        decorations.push(
+          Decoration.widget({
+            block: true,
+            side: 1,
+            widget: new Render(
+              source.slice(from, to),
+              options,
+              "live-preview-block",
+            ),
+          }).range(last.to),
+        );
+        replace(from, to);
+        return;
+      }
+      if (node.type === "thematicBreak")
+        replace(from, to, new Marker("", "lp-rule"));
+      if (
+        node.type === "yaml" ||
+        String(node.type) === "toml" ||
+        node.type === "definition"
+      )
+        replace(from, to);
+      if (node.type === "footnoteDefinition") {
+        const prefix = first.text.match(/^\s{0,3}\[\^[^\]]+\]:\s*/);
+        if (prefix)
+          replace(
+            first.from,
+            first.from + prefix[0].length,
+            new Marker(
+              `${node.label ?? node.identifier}: `,
+              "lp-footnote-label",
+            ),
+          );
+      }
+      node.children?.forEach((child) => visit(child, inCode));
+    };
+    tree.children.forEach((n) => visit(n as Node));
+    // Obsidian links and safe underline tags are inline syntax too.
+    for (let number = 1; number <= state.doc.lines; number++) {
+      const line = state.doc.line(number);
+      if (
+        lineClasses.get(number)?.has("lp-code-line") ||
+        atomics.some((r) => line.from >= r.from && line.from < r.to)
+      )
+        continue;
+      for (const m of line.text.matchAll(
+        /<(u|b|strong|em|i|del|s)>(.*?)<\/\1>/g,
+      )) {
+        const at = line.from + m.index!,
+          left = m[1].length + 2,
+          right = m[1].length + 3;
+        replace(at, at + left);
+        replace(at + m[0].length - right, at + m[0].length);
+        mark(
+          at + left,
+          at + m[0].length - right,
+          ["u"].includes(m[1])
+            ? "lp-underline"
+            : ["b", "strong"].includes(m[1])
+              ? "lp-strong"
+              : ["em", "i"].includes(m[1])
+                ? "lp-emphasis"
+                : "lp-strike",
+        );
+      }
+      for (const m of line.text.matchAll(
+        /!\[\[([^\]]+\.(?:png|jpg|jpeg|gif|webp|svg)(?:\|[^\]]+)?)\]\]/gi,
+      )) {
+        const at = line.from + m.index!;
+        replace(at, at + m[0].length);
+        decorations.push(
+          Decoration.widget({
+            side: 1,
+            widget: new Render(m[0], options, "lp-image"),
+          }).range(line.to),
+        );
+      }
+      for (const m of line.text.matchAll(
+        /(?<!!)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+      )) {
+        const at = line.from + m.index!,
+          alias = m[2];
+        const a = at + (alias ? m[0].indexOf("|") + 1 : 2),
+          b = at + m[0].length - 2;
+        replace(at, a);
+        replace(b, at + m[0].length);
+        mark(a, b, "lp-link", { "data-wiki": m[1] });
+      }
+    }
+    for (let number = 1; number <= state.doc.lines; number++) {
+      const classes = lineClasses.get(number) ?? new Set<string>();
+      if (active.has(number)) classes.add("lp-source-line");
+      if (classes.size)
+        decorations.push(
+          Decoration.line({ class: [...classes].join(" ") }).range(
+            state.doc.line(number).from,
+          ),
+        );
+    }
+    return {
+      decorations: Decoration.set(decorations, true),
+      atomics: Decoration.set(atomics, true),
+    };
+  };
+  const field = StateField.define<{
+    decorations: DecorationSet;
+    atomics: DecorationSet;
+    focused: boolean;
+    tree: ReturnType<typeof parser.parse>;
+  }>({
+    create(state) {
+      const tree = parser.parse(state.doc.toString());
+      return { ...decorate(state, true, tree), focused: true, tree };
+    },
+    update(value, tr) {
+      let focused = value.focused;
+      for (const e of tr.effects) if (e.is(focusEffect)) focused = e.value;
+      if (tr.docChanged || tr.selection || focused !== value.focused) {
+        const tree = tr.docChanged
+          ? parser.parse(tr.state.doc.toString())
+          : value.tree;
+        return { ...decorate(tr.state, focused, tree), focused, tree };
       }
       return value;
     },
-    provide: (f) => EditorView.decorations.from(f, (value) => value.decorations),
+    provide: (f) => EditorView.decorations.from(f, (v) => v.decorations),
   });
-  let preferredColumn: number | null = null;
-  let previousHead = -1;
-  let previousDoc: EditorState["doc"] | null = null;
-  const vertical = (forward: boolean, extend: boolean) => (view: EditorView) => {
-    const { state } = view;
-    const selection = state.selection.main;
-    if (!extend && !selection.empty) return false;
-    const node = state.field(field).tree.children.find((n) => selection.head >= n.position!.start.offset! && selection.head <= n.position!.end.offset!);
-    const line = state.doc.lineAt(selection.head);
-    const predicted = view.moveVertically(selection, forward).head;
-    const nearby = Math.abs(state.doc.lineAt(predicted).number - line.number) <= 1;
-    // Preserve normal visual movement, including wrapped lines, inside the
-    // active source paragraph. Across replaced blocks, move by source row.
-    if (node && nearby && (forward ? predicted > selection.head : predicted < selection.head) && predicted >= node.position!.start.offset! && predicted <= node.position!.end.offset!) {
-      preferredColumn = null; previousHead = -1;
-      return false;
-    }
-    const number = line.number + (forward ? 1 : -1);
-    if (number < 1 || number > state.doc.lines) return false;
-    if (previousHead !== selection.head || previousDoc !== state.doc || preferredColumn === null) preferredColumn = selection.head - line.from;
-    const target = state.doc.line(number);
-    const head = target.from + Math.min(preferredColumn, target.length);
-    previousHead = head; previousDoc = state.doc;
-    view.dispatch({ selection: extend ? EditorSelection.range(selection.anchor, head) : EditorSelection.cursor(head), scrollIntoView: true, userEvent: "select.keyboard" });
-    return true;
-  };
-  return [field, Prec.highest(keymap.of([
-    { key: "ArrowUp", run: vertical(false, false), shift: vertical(false, true) },
-    { key: "ArrowDown", run: vertical(true, false), shift: vertical(true, true) },
-  ])), EditorView.focusChangeEffect.of((_state, focused) => focusEffect.of(focused))];
+  const vertical =
+    (forward: boolean, extend: boolean) => (view: EditorView) => {
+      const { state } = view,
+        selection = state.selection.main;
+      if (!extend && !selection.empty) return false;
+      const predicted = view.moveVertically(selection, forward).head,
+        line = state.doc.lineAt(selection.head);
+      if (
+        (forward ? predicted > selection.head : predicted < selection.head) &&
+        Math.abs(state.doc.lineAt(predicted).number - line.number) <= 1
+      )
+        return false;
+      let number = line.number + (forward ? 1 : -1);
+      if (number < 1 || number > state.doc.lines) return false;
+      let target = state.doc.line(number),
+        head =
+          target.from + Math.min(selection.head - line.from, target.length);
+      state.field(field).atomics.between(head, head, (from, to) => {
+        head = forward
+          ? Math.min(state.doc.length, to + 1)
+          : Math.max(0, from - 1);
+      });
+      view.dispatch({
+        selection: extend
+          ? EditorSelection.range(selection.anchor, head)
+          : EditorSelection.cursor(head),
+        scrollIntoView: true,
+        userEvent: "select.keyboard",
+      });
+      return true;
+    };
+  return [
+    field,
+    EditorView.editorAttributes.of({ class: "line-live-preview" }),
+    EditorView.atomicRanges.of((view) => view.state.field(field).atomics),
+    Prec.highest(
+      keymap.of([
+        {
+          key: "ArrowUp",
+          run: vertical(false, false),
+          shift: vertical(false, true),
+        },
+        {
+          key: "ArrowDown",
+          run: vertical(true, false),
+          shift: vertical(true, true),
+        },
+      ]),
+    ),
+    EditorView.focusChangeEffect.of((_state, focused) =>
+      focusEffect.of(focused),
+    ),
+    EditorView.domEventHandlers({
+      click: (event) => {
+        const target = (event.target as HTMLElement).closest<HTMLElement>(
+          "[data-href],[data-wiki]",
+        );
+        if (!target) return false;
+        if (target.dataset.wiki) {
+          options.onWiki(target.dataset.wiki);
+          event.preventDefault();
+          return true;
+        }
+        const href = target.dataset.href;
+        if (href) {
+          event.preventDefault();
+          if (href.startsWith("#")) {
+            options.onWiki(href);
+            return true;
+          }
+          if (/\.md(?:#.*)?$/i.test(href)) options.onWiki(decodeURI(href));
+          else void external(href);
+          return true;
+        }
+        return false;
+      },
+    }),
+  ];
 }
