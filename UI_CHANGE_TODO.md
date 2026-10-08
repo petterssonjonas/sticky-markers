@@ -77,6 +77,8 @@ Release run 37848184716: Windows and both Mac package jobs passed. Linux RPM/DEB
 - [x] Add skills/write-vault-note/SKILL.md for writing ordinary Markdown files in a vault directory.
 - [x] Omit Flatpak from release jobs, required signed targets and release documentation.
 - [x] Validate native dragging and fresh package contents.
-- [ ] Verify every published 0.6 release asset.
+- [x] Verify every published 0.6 release asset.
 
 Validation: 32 core Rust tests, 9 editor tests, 37 browser tests and 5 release tests passed. Windows cross-compilation passed. Fresh 0.6 RPM/DEB payloads contain only the desktop executable with correct executable, icon and launcher permissions. Native lifecycle checks include dragging the collapsed main window by its logo text, editing, renaming, pinned launcher actions, close/quit saves and restoration.
+
+Release run 37855219948 passed all platform builds and publication. The [0.6 Beta release](https://github.com/petterssonjonas/sticky-markers/releases/tag/v0.6.0) has all 20 assets attached: Linux RPM/DEB/AppImage, Windows EXE, Intel/Apple Silicon macOS DMGs and app archives, six signatures, Arch packaging, source, manifest and checksums. Downloaded RPM/DEB permissions and signatures passed; downloaded packages, source and signature files match SHA256SUMS. The manifest contains all four signed updater targets; the source includes the vault-writing skill and the Arch recipe contains its exact checksum.
