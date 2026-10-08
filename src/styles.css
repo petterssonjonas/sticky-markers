@@ -1,15 +1,5 @@
-@font-face { font-family: "Libron"; src: url("/fonts/libron/Libron-Regular.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
-@font-face { font-family: "Libron"; src: url("/fonts/libron/Libron-Bold.ttf") format("truetype"); font-style: normal; font-weight: 700; font-display: swap; }
-@font-face { font-family: "Libron"; src: url("/fonts/libron/Libron-Italic.ttf") format("truetype"); font-style: italic; font-weight: 400; font-display: swap; }
-@font-face { font-family: "Libron"; src: url("/fonts/libron/Libron-BoldItalic.ttf") format("truetype"); font-style: italic; font-weight: 700; font-display: swap; }
-@font-face { font-family: "Barlow"; src: url("/fonts/barlow/Barlow-Regular.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
-@font-face { font-family: "Barlow"; src: url("/fonts/barlow/Barlow-Bold.ttf") format("truetype"); font-style: normal; font-weight: 700; font-display: swap; }
-@font-face { font-family: "Barlow"; src: url("/fonts/barlow/Barlow-Italic.ttf") format("truetype"); font-style: italic; font-weight: 400; font-display: swap; }
-@font-face { font-family: "Barlow"; src: url("/fonts/barlow/Barlow-BoldItalic.ttf") format("truetype"); font-style: italic; font-weight: 700; font-display: swap; }
-@font-face { font-family: "Noto Sans"; src: url("/fonts/noto-sans/NotoSans.ttf") format("truetype"); font-style: normal; font-weight: 100 900; font-display: swap; }
-@font-face { font-family: "Noto Sans"; src: url("/fonts/noto-sans/NotoSans-Italic.ttf") format("truetype"); font-style: italic; font-weight: 100 900; font-display: swap; }
 :root {
-  font-family: "Barlow", "Noto Sans", sans-serif;
+  font-family: "Segoe UI", Inter, system-ui, sans-serif;
   color: #343c34;
   background: #f7f6f0;
   font-synthesis: none;
@@ -1517,3 +1507,11 @@ hr {
 .settings-pane { container-type: inline-size; }
 @container (max-width: 550px) { .settings-pane .vault-setting { grid-template-columns: 18px minmax(0,1fr); } .settings-pane .vault-default-color { grid-column: 2; } }
 .note-drag, .update-panel h3, .update-dialog h2 { font-family: inherit; }
+
+.rename-window { padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.rename-window h1 { font: inherit; font-size: 16px; font-weight: 600; margin: 0; }
+.rename-window label { display: flex; flex-direction: column; gap: 5px; }
+.rename-window input { width: 100%; }
+.rename-window small { color: var(--muted); font-size: 11px; }
+.rename-window .action-row { justify-content: flex-end; margin: 0; }
+.rename-window .error-text { margin: 0; }

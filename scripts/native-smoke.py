@@ -91,11 +91,25 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         wait_for(lambda: json.loads(config.read_text())['styles'][style_key]['pinned'], 'native pin action did not persist')
         assert json.loads(config.read_text())['styles'][style_key]['pinnedAt'] > 0
         assert json.loads(config.read_text())['styles'][style_key]['color'] == 4, 'new note ignored vault default color'
-        assert json.loads(config.read_text())['styles'][style_key]['font'] == 'barlow', 'new note did not default to Barlow'
+        assert json.loads(config.read_text())['styles'][style_key]['font'] == 'sans', 'new note did not default to system sans serif'
         assert json.loads(config.read_text())['styles']['native/First.md']['color'] == 0, 'vault default changed an existing note'
         subprocess.run([xdotool,'mousemove','--window',draft_win,'43','20','click','1'], check=True)
         wait_for(lambda: not json.loads(config.read_text())['styles'][style_key]['pinned'], 'native unpin action did not persist')
-        subprocess.run([xdotool,'mousemove','--window',draft_win,'402','24','click','1'], check=True)
+        subprocess.run([xdotool,'windowraise',draft_win,'windowfocus',draft_win,'key','F2'], check=True)
+        wait_for(lambda: windows(r'Rename note\.\.\.'), 'rename did not create a separate native window')
+        rename_win = windows(r'Rename note\.\.\.')[0]
+        assert rename_win != draft_win, 'rename was embedded in the original note'
+        time.sleep(2)
+        subprocess.run([xdotool,'windowraise',rename_win,'windowfocus',rename_win,'key','ctrl+a','type','--clearmodifiers','Renamed'], check=True)
+        subprocess.run([xdotool,'key','Return'], check=True)
+        wait_for(lambda: (vault/'Renamed.md').exists() and windows('Renamed.md'), 'extensionless native rename was not saved as Markdown')
+        assert not draft_path.exists(), 'rename left the original note behind'
+        draft_path = vault/'Renamed.md'
+        assert draft_path.read_text() == 'A draft saved safely.'
+        wait_for(lambda: not windows(r'Rename note\.\.\.'), 'rename dialog did not close')
+        draft_win = windows('Renamed.md')[0]
+        time.sleep(1)
+        subprocess.run([xdotool,'windowraise',draft_win,'windowfocus',draft_win,'mousemove','--window',draft_win,'402','24','click','1'], check=True)
         wait_for(lambda: not windows(draft_path.name), 'saved draft did not close')
         subprocess.run(cmd+['--main'], env=env, check=True, timeout=15, stdout=log, stderr=log)
         wait_for(lambda: windows('Sticky Markers'), 'main menu command did not show collection')
@@ -125,11 +139,12 @@ with tempfile.TemporaryDirectory(prefix='sticky-native-smoke-') as tmp:
         app=subprocess.Popen(cmd,env=env,stdout=log,stderr=log)
         wait_for(lambda: windows('First.md'), 'saved active note did not restore after quit')
         wait_for(lambda: windows('Sticky Markers'), 'restart did not show main window')
-        print('Native smoke passed: sidebar-first main window, repeat-launch routing, active-note restore, packaged editing, save-before-close, stay running with no windows, immediate blank files and cleanup, first-content naming, main/note commands, pinned desktop actions and application identity, flush-before-quit, subsequent restoration.')
+        print('Native smoke passed: sidebar-first main window, repeat-launch routing, active-note restore, packaged editing, save-before-close, stay running with no windows, immediate blank files and cleanup, first-content naming, separate rename window and automatic .md extension, main/note commands, pinned desktop actions and application identity, flush-before-quit, subsequent restoration.')
     except Exception:
         log.flush()
         print((root/'native.log').read_text(), file=sys.stderr)
         print('Note after typing:', repr(note.read_text()), file=sys.stderr)
+        print('Vault files:', [p.name for p in vault.iterdir()], file=sys.stderr)
         raise
     finally:
         # Fixture processes only. Terminate the traced app before its proot parent.

@@ -1,3 +1,4 @@
+import { noteFilename } from "./rename-name";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -37,15 +38,14 @@ function load(): Demo {
   if (saved) {
     const d = JSON.parse(saved) as Demo;
     d.config.settings = { ...defaults, ...d.config.settings };
-    if (!d.config.fontDefaultsMigrated) {
-      if (d.config.settings.font === "libron")
-        d.config.settings.font = "barlow";
-      d.config.fontDefaultsMigrated = true;
-    }
+    const bundled = ["libron", "barlow", "noto-sans"];
+    if (bundled.includes(d.config.settings.font))
+      d.config.settings.font = "sans";
+    for (const style of Object.values(d.config.styles))
+      if (bundled.includes(style.font)) style.font = "sans";
     return d;
   }
   const config: Config = {
-    fontDefaultsMigrated: true,
     vaults: [
       {
         id: "demo",
@@ -194,6 +194,8 @@ async function demoCall<T>(
       d.config.mainVault = id;
       break;
     case "editor_preferences":
+      if (typeof args.lineNumbers === "boolean")
+        d.config.settings.lineNumbers = args.lineNumbers;
       if (args.mode) d.config.settings.mode = args.mode as Settings["mode"];
       if (args.toolbarPins)
         d.config.settings.toolbarPins = args.toolbarPins as string[];
@@ -352,8 +354,79 @@ async function demoCall<T>(
       window.dispatchEvent(new Event("demo-notes-changed"));
       navigate();
       return null as T;
+    case "open_rename": {
+      const n = await doc(path);
+      if (n.revision !== args.expected)
+        throw new Error("Conflict: note changed before renaming.");
+      const request = `rename-${crypto.randomUUID()}`;
+      localStorage.setItem(
+        request,
+        JSON.stringify({ vaultId: id, path, expected: n.revision }),
+      );
+      const popup = window.open(
+        `/?rename=${request}`,
+        request,
+        "popup,width=460,height=230",
+      );
+      if (!popup) {
+        localStorage.removeItem(request);
+        throw new Error("The rename window was blocked by your browser.");
+      }
+      break;
+    }
+    case "rename_context":
+      out = JSON.parse(localStorage.getItem(String(args.request)) ?? "null");
+      if (!out) throw new Error("This rename dialog has closed.");
+      break;
+    case "rename_cancel": {
+      const context = JSON.parse(
+        localStorage.getItem(String(args.request)) ?? "null",
+      );
+      window.opener?.postMessage(
+        { type: "rename-cancelled", vaultId: context?.vaultId },
+        location.origin,
+      );
+      localStorage.removeItem(String(args.request));
+      window.close();
+      return null as T;
+    }
+    case "rename_submit": {
+      const context = JSON.parse(
+        localStorage.getItem(String(args.request)) ?? "null",
+      );
+      if (!context) throw new Error("This rename dialog has closed.");
+      const source =
+        context.vaultId === "demo" ? d.files : d.vaultFiles![context.vaultId];
+      if (
+        !(context.path in source) ||
+        (await hash(source[context.path])) !== context.expected
+      )
+        throw new Error("Conflict: note changed before renaming.");
+      const target = noteFilename(String(args.newPath));
+      if (target !== context.path && target in source)
+        throw new Error("A note already exists at that path");
+      source[target] = source[context.path];
+      if (target !== context.path) delete source[context.path];
+      const style = d.config.styles[`${context.vaultId}/${context.path}`];
+      if (style) {
+        d.config.styles[`${context.vaultId}/${target}`] = {
+          ...style,
+          provisional: false,
+        };
+        if (target !== context.path)
+          delete d.config.styles[`${context.vaultId}/${context.path}`];
+      }
+      persist(d);
+      window.opener?.postMessage(
+        { type: "note-renamed", vaultId: context.vaultId, path: target },
+        location.origin,
+      );
+      localStorage.removeItem(String(args.request));
+      window.close();
+      return null as T;
+    }
     case "rename_note": {
-      const target = String(args.newPath);
+      const target = noteFilename(String(args.newPath));
       if (target in files)
         throw new Error("A note already exists at that path");
       files[target] = files[path];
@@ -428,6 +501,8 @@ async function demoCall<T>(
       "system_fonts",
       "recovery_path",
       "main_panel",
+      "rename_context",
+      "open_rename",
     ].includes(operation)
   ) {
     persist(d);

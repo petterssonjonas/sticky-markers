@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Sticky Markers",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "identifier": "dev.stickymarkers.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -35,7 +35,7 @@
         }
       },
       "rpm": {
-        "release": "7",
+        "release": "1",
         "desktopTemplate": "linux.desktop.hbs",
         "files": {
           "/usr/share/applications/dev.stickymarkers.desktop.desktop": "../packaging/linux/dev.stickymarkers.desktop.desktop"

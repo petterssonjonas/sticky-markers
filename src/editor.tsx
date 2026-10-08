@@ -113,6 +113,7 @@ export const MarkdownEditor = forwardRef<
     readOnly?: boolean;
     rendered?: boolean;
     plain?: boolean;
+    showLineNumbers?: boolean;
     preview?: PreviewOptions;
     heading?: string;
   }
@@ -125,6 +126,7 @@ export const MarkdownEditor = forwardRef<
     readOnly = false,
     rendered = false,
     plain = false,
+    showLineNumbers = true,
     preview,
     heading,
   },
@@ -174,7 +176,9 @@ export const MarkdownEditor = forwardRef<
           presentation.current.of(
             rendered && preview
               ? livePreview(preview)
-              : [lineNumbers(), highlightActiveLineGutter()],
+              : showLineNumbers
+                ? [lineNumbers(), highlightActiveLineGutter()]
+                : [],
           ),
           drawSelection(),
           highlightSpecialChars(),
@@ -250,12 +254,14 @@ export const MarkdownEditor = forwardRef<
         presentation.current.reconfigure(
           rendered && preview
             ? livePreview(preview)
-            : [lineNumbers(), highlightActiveLineGutter()],
+            : showLineNumbers
+              ? [lineNumbers(), highlightActiveLineGutter()]
+              : [],
         ),
         syntax.current.reconfigure(plain ? [] : markdown()),
       ],
     });
-  }, [rendered, plain, dark, preview?.vaultId, preview?.path]);
+  }, [rendered, plain, showLineNumbers, dark, preview?.vaultId, preview?.path]);
   useEffect(() => {
     if (!heading || !view.current) return;
     const v = view.current;

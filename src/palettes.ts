@@ -60,9 +60,6 @@ export function colors(palette: string, index: number, dark: boolean) {
   };
 }
 export const fonts: Record<string, string> = {
-  libron: '"Libron", "Noto Sans", serif',
-  barlow: '"Barlow", "Noto Sans", sans-serif',
-  "noto-sans": '"Noto Sans", sans-serif',
   sans: '"Segoe UI", system-ui, sans-serif',
   serif: 'Georgia, "Times New Roman", serif',
   mono: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',

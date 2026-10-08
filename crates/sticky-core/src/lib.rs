@@ -39,6 +39,16 @@ pub fn is_markdown(path: &str) -> bool {
     )
 }
 
+/// Preserve explicit text-format extensions; extensionless note names are Markdown.
+pub fn note_filename(path: &str) -> String {
+    let path = path.trim();
+    if Path::new(path).extension().is_none() {
+        format!("{path}.md")
+    } else {
+        path.into()
+    }
+}
+
 pub fn note_name(content: &str) -> String {
     let line = strip_frontmatter(content)
         .lines()
@@ -137,6 +147,7 @@ pub struct Settings {
     pub github_client_id: String,
     pub check_updates: bool,
     pub toolbar_pins: Vec<String>,
+    pub line_numbers: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -147,11 +158,12 @@ impl Default for Settings {
             appearance: "system".into(),
             palette: "classic".into(),
             color: 0,
-            font: "barlow".into(),
+            font: "sans".into(),
             font_size: 16.0,
             github_client_id: option_env!("STICKY_GITHUB_CLIENT_ID").unwrap_or("").into(),
             check_updates: true,
             toolbar_pins: Vec::new(),
+            line_numbers: true,
         }
     }
 }
@@ -195,7 +207,6 @@ impl Default for NoteStyle {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
-    pub font_defaults_migrated: bool,
     pub vaults: Vec<Vault>,
     pub active_vault: Option<String>,
     pub main_vault: Option<String>,
@@ -272,21 +283,20 @@ impl Core {
         match fs::read(self.data.join("settings.json")) {
             Ok(b) => {
                 let mut config: Config = serde_json::from_slice(&b)?;
-                if !config.font_defaults_migrated {
-                    if config.settings.font == "libron" {
-                        config.settings.font = "barlow".into();
+                if ["libron", "barlow", "noto-sans"].contains(&config.settings.font.as_str()) {
+                    config.settings.font = "sans".into();
+                }
+                for style in config.styles.values_mut() {
+                    if ["libron", "barlow", "noto-sans"].contains(&style.font.as_str()) {
+                        style.font = "sans".into();
                     }
-                    config.font_defaults_migrated = true;
                 }
                 for v in &mut config.vaults {
                     v.in_git_repo = v.github.is_some() || has_git_ancestor(Path::new(&v.path));
                 }
                 Ok(config)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config {
-                font_defaults_migrated: true,
-                ..Config::default()
-            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e.into()),
         }
     }
@@ -804,6 +814,8 @@ impl Core {
         Ok(())
     }
     pub fn rename(&self, id: &str, path: &str, new_path: &str, expected: &str) -> Result<Document> {
+        let normalized = note_filename(new_path);
+        let new_path = normalized.as_str();
         let source = self.note_path(id, path)?;
         let _lock = self.lock(&source.to_string_lossy())?;
         let d = self.read(id, path)?;
@@ -820,7 +832,8 @@ impl Core {
         self.recovery(id, path, d.content.as_bytes())?;
         fs::remove_file(source)?;
         self.update_config(|c| {
-            if let Some(style) = c.styles.remove(&format!("{id}/{path}")) {
+            if let Some(mut style) = c.styles.remove(&format!("{id}/{path}")) {
+                style.provisional = false;
                 c.styles.insert(format!("{id}/{new_path}"), style);
             }
             for n in &mut c.recent {
@@ -1014,6 +1027,28 @@ mod tests {
         (d, core, v)
     }
     #[test]
+    fn rename_adds_markdown_only_for_extensionless_names_and_preserves_contents() {
+        let (_tmp, core, v) = fixture();
+        let d = core
+            .create(&v.id, Some("Original.md"), "## Keep Markdown", None)
+            .unwrap();
+        let renamed = core.rename(&v.id, &d.path, "Renamed", &d.revision).unwrap();
+        assert_eq!(renamed.path, "Renamed.md");
+        assert_eq!(renamed.content, "## Keep Markdown");
+        assert!(is_markdown(&renamed.path));
+        let text = core
+            .rename(&v.id, &renamed.path, "config.toml", &renamed.revision)
+            .unwrap();
+        assert_eq!(text.path, "config.toml");
+        assert!(!is_markdown(&text.path));
+        assert_eq!(note_filename("folder.dir/Title"), "folder.dir/Title.md");
+        let new = core.create_new_note(&v.id).unwrap();
+        let explicit = core
+            .rename(&v.id, &new.path, "Chosen name", &new.revision)
+            .unwrap();
+        assert!(!core.cleanup_empty_new_note(&v.id, &explicit.path).unwrap());
+    }
+    #[test]
     fn new_note_files_exist_immediately_and_only_disposable_blanks_are_removed() {
         let (_tmp, core, v) = fixture();
         let new = core.create_new_note(&v.id).unwrap();
@@ -1068,24 +1103,23 @@ mod tests {
         assert!(core.config().unwrap().vaults.iter().all(|v| v.in_git_repo));
     }
     #[test]
-    fn barlow_migration_runs_once_and_keeps_individual_fonts() {
-        let (tmp, core, _) = fixture();
+    fn removed_font_ids_fall_back_and_system_fonts_are_preserved() {
+        let (_tmp, core, _) = fixture();
         let settings = core.data.join("settings.json");
-        fs::write(
-            &settings,
-            r#"{"settings":{"font":"libron"},"styles":{"v/n.md":{"font":"libron"}}}"#,
-        )
-        .unwrap();
-        assert_eq!(core.config().unwrap().settings.font, "barlow");
-        assert_eq!(core.config().unwrap().styles["v/n.md"].font, "libron");
+        fs::write(&settings, r#"{"settings":{"font":"barlow"},"styles":{"v/a.md":{"font":"libron"},"v/b.md":{"font":"Fira Mono"}}}"#).unwrap();
+        let config = core.config().unwrap();
+        assert_eq!(config.settings.font, "sans");
+        assert_eq!(config.styles["v/a.md"].font, "sans");
+        assert_eq!(config.styles["v/b.md"].font, "Fira Mono");
+        assert!(config.settings.line_numbers);
         core.update_config(|c| {
-            c.settings.font = "libron".into();
+            c.settings.font = "Cantarell".into();
+            c.settings.line_numbers = false;
             Ok(())
         })
         .unwrap();
-        let reopened = Core::new(tmp.path().join("state")).unwrap();
-        assert_eq!(reopened.config().unwrap().settings.font, "libron");
-        assert_eq!(Settings::default().font, "barlow");
+        assert_eq!(core.config().unwrap().settings.font, "Cantarell");
+        assert!(!core.config().unwrap().settings.line_numbers);
     }
     #[test]
     fn text_formats_are_bounded_and_binary_files_are_skipped() {

@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+const { version } = JSON.parse(
+  readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+);
 import { test, expect } from "@playwright/test";
 async function openPanel(page: import("@playwright/test").Page) {
   const button = page.getByRole("button", {
@@ -145,7 +149,7 @@ test("update checks offer package links without installation controls", async ({
   await openPanel(page);
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Updates", exact: true }).click();
-  await expect(page.getByText("Installed version 0.1.0")).toBeVisible();
+  await expect(page.getByText(`Installed version ${version}`)).toBeVisible();
   await expect(
     page.getByText("The app does not download or install updates.", {
       exact: false,

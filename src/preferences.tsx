@@ -3,12 +3,6 @@ import { type Vault } from "./types";
 import { Check, ChevronDown, Github, FolderOpen } from "lucide-react";
 import { palettes, colorNames } from "./palettes";
 
-export const bundledFonts = [
-  ["barlow", "Barlow"],
-  ["libron", "Libron"],
-  ["noto-sans", "Noto Sans"],
-] as const;
-
 export function FontOptions({
   current,
   system,
@@ -16,31 +10,33 @@ export function FontOptions({
   current: string;
   system: string[];
 }) {
-  const known = ["sans", "serif", "mono", ...bundledFonts.flat(), ...system];
+  const generic = [
+    ["sans", "Sans serif"],
+    ["serif", "Serif"],
+    ["mono", "Monospace"],
+  ];
   return (
     <>
-      {bundledFonts.map(([id, label]) => (
-        <option key={id} value={id}>
-          {label}
-        </option>
-      ))}
+      <optgroup label="Generic families">
+        {generic.map(([id, name]) => (
+          <option key={id} value={id}>
+            {name}
+          </option>
+        ))}
+      </optgroup>
       <option disabled value="font-divider">
         ─────────
       </option>
       <optgroup label="System fonts">
-        {!known.includes(current) && <option value={current}>{current}</option>}
-        {system
-          .filter((f) => !bundledFonts.some(([, name]) => f === name))
-          .map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
-          ))}
-      </optgroup>
-      <optgroup label="Generic families">
-        <option value="sans">Sans serif</option>
-        <option value="serif">Serif</option>
-        <option value="mono">Monospace</option>
+        {!generic.some(([id]) => id === current) &&
+          !system.includes(current) && (
+            <option value={current}>{current}</option>
+          )}
+        {system.map((name) => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
       </optgroup>
     </>
   );

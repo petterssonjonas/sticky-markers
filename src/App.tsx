@@ -64,6 +64,7 @@ import {
   VaultIcon,
   FontOptions,
 } from "./preferences";
+import { RenameWindow } from "./rename";
 import { Collection } from "./collection";
 import { UpdateNotice, UpdatePanel } from "./updates";
 import { type EditorHandle } from "./editor";
@@ -181,6 +182,7 @@ export default function App() {
       </div>
     );
   const q = new URLSearchParams(route);
+  if (q.get("rename")) return <RenameWindow request={q.get("rename")!} />;
   const path = q.get("note"),
     vaultId = q.get("vault");
   return (
@@ -336,6 +338,25 @@ function NoteWindow({
       editor.current?.setReadOnly(false);
     }
   }, [flush, vaultId, path]);
+  const rename = useCallback(async () => {
+    closing.current = true;
+    setFinishing(true);
+    editor.current?.setReadOnly(true);
+    try {
+      await flush();
+      await call("open_rename", {
+        vaultId,
+        path,
+        expected: saved.current?.revision,
+      });
+      setMenu(false);
+    } catch (e) {
+      closing.current = false;
+      setFinishing(false);
+      editor.current?.setReadOnly(false);
+      setError(String(e));
+    }
+  }, [flush, vaultId, path]);
   useEffect(() => {
     let live = true;
     call<Document>("read_note", { vaultId, path })
@@ -399,6 +420,32 @@ function NoteWindow({
     };
   }, [close, flush]);
   useEffect(() => {
+    const unlock = () => {
+      closing.current = false;
+      setFinishing(false);
+      editor.current?.setReadOnly(false);
+    };
+    const native = desktop ? listen("rename-cancelled", unlock) : null;
+    const receive = (event: MessageEvent) => {
+      if (event.origin !== location.origin || event.data?.vaultId !== vaultId)
+        return;
+      if (event.data.type === "rename-cancelled") unlock();
+      if (event.data.type === "note-renamed") {
+        history.replaceState(
+          null,
+          "",
+          `/?vault=${encodeURIComponent(vaultId)}&note=${encodeURIComponent(event.data.path)}`,
+        );
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      }
+    };
+    window.addEventListener("message", receive);
+    return () => {
+      window.removeEventListener("message", receive);
+      void native?.then((unlisten) => unlisten());
+    };
+  }, [vaultId]);
+  useEffect(() => {
     const interval = setInterval(() => {
       if (pending.current || !saved.current) return;
       void call<Document>("read_note", { vaultId, path })
@@ -423,6 +470,11 @@ function NoteWindow({
   }, [vaultId, path]);
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
+      if (e.key === "F2") {
+        e.preventDefault();
+        if (!closing.current) void rename();
+        return;
+      }
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === "s") {
@@ -443,7 +495,7 @@ function NoteWindow({
     };
     window.addEventListener("keydown", listener, true);
     return () => window.removeEventListener("keydown", listener, true);
-  }, [flush, vaultId, destinationVault]);
+  }, [flush, rename, vaultId, destinationVault]);
   const change = (s: string) => {
     current.current = s;
     setText(s);
@@ -829,26 +881,7 @@ function NoteWindow({
               <Download size={15} />
               Export note
             </button>
-            <button
-              className="menu-action"
-              onClick={() => {
-                const newPath = prompt(
-                  "New vault-relative filename. Links in other notes will not be rewritten.",
-                  actualPath.startsWith("draft-") ? "Note.md" : actualPath,
-                );
-                if (newPath && newPath !== path)
-                  void flush()
-                    .then(() =>
-                      call("rename_note", {
-                        vaultId,
-                        path,
-                        newPath,
-                        expected: saved.current?.revision,
-                      }),
-                    )
-                    .catch((e) => setError(String(e)));
-              }}
-            >
+            <button className="menu-action" onClick={() => void rename()}>
               Rename note
             </button>
             {config.vaults.length > 1 && (
@@ -951,6 +984,7 @@ function NoteWindow({
               onLink={(u) => void external(u)}
               rendered={noteMode === "view" && !plain}
               plain={plain}
+              showLineNumbers={config.settings.lineNumbers ?? true}
               preview={{
                 dark,
                 vaultId,
@@ -1176,6 +1210,21 @@ function SettingsDialog({
                 <option value="edit">Edit</option>
                 <option value="view">Rendered</option>
               </select>
+            </label>
+            <label className="setting-row">
+              <span>
+                <strong>Line numbers in Edit mode</strong>
+                <small>Applies to all notes in source mode.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.lineNumbers ?? true}
+                onChange={(e) => {
+                  const lineNumbers = e.target.checked;
+                  field({ lineNumbers });
+                  void run(() => call("editor_preferences", { lineNumbers }));
+                }}
+              />
             </label>
             <div className="setting-row">
               <span>

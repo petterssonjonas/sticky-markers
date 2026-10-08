@@ -30,6 +30,7 @@ export interface Settings {
   githubClientId: string;
   checkUpdates: boolean;
   toolbarPins: string[];
+  lineNumbers: boolean;
 }
 export interface NoteStyle {
   provisional?: boolean;
@@ -60,7 +61,6 @@ export interface Document extends NoteRef {
   revision: string;
 }
 export interface Config {
-  fontDefaultsMigrated?: boolean;
   vaults: Vault[];
   activeVault: string | null;
   mainVault?: string | null;
@@ -75,11 +75,12 @@ export const defaults: Settings = {
   appearance: "system",
   palette: "classic",
   color: 0,
-  font: "barlow",
+  font: "sans",
   fontSize: 16,
   githubClientId: "",
   checkUpdates: true,
   toolbarPins: [],
+  lineNumbers: true,
 };
 export function defaultStyle(settings: Settings, vault?: Vault): NoteStyle {
   return {

@@ -394,7 +394,7 @@ test("app and vault defaults create differently colored notes without changing e
   await second.close();
 });
 
-test("compact appearance, oldest sorting and all bundled fonts work offline", async ({
+test("compact appearance, oldest sorting and system font selectors work without bundled fonts", async ({
   page,
 }) => {
   await fixture(page);
@@ -436,19 +436,20 @@ test("compact appearance, oldest sorting and all bundled fonts work offline", as
   await page.goto("/?vault=demo&note=Note_0000.md");
   await page.getByRole("button", { name: "Note menu", exact: true }).click();
   const fonts = page.getByLabel("Note font", { exact: true });
-  await expect(fonts.locator(":scope > option").first()).toHaveText("Barlow");
-  for (const [id, family] of [
-    ["libron", "Libron"],
-    ["barlow", "Barlow"],
-    ["noto-sans", "Noto Sans"],
-  ]) {
+  await expect(fonts.locator("optgroup").first()).toHaveAttribute(
+    "label",
+    "Generic families",
+  );
+  await expect(
+    fonts.locator('optgroup[label="Generic families"] option'),
+  ).toHaveText(["Sans serif", "Serif", "Monospace"]);
+  await expect(
+    fonts.locator(
+      'option[value="libron"],option[value="barlow"],option[value="noto-sans"]',
+    ),
+  ).toHaveCount(0);
+  for (const id of ["sans", "serif", "mono", "Arial"])
     await fonts.selectOption(id);
-    await page.evaluate(async (family) => {
-      const faces = await document.fonts.load(`16px "${family}"`);
-      if (!faces.length || faces.some((face) => face.status !== "loaded"))
-        throw new Error(`Missing bundled font ${family}`);
-    }, family);
-  }
   await expect(fonts.locator('option[value="font-divider"]')).toHaveAttribute(
     "disabled",
     "",
@@ -485,7 +486,7 @@ test("appearance saves immediately, independently of other preferences, and appl
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(settings.getByRole("combobox").first()).toHaveValue("dark");
   await expect(settings.getByLabel("Default Note size")).toHaveValue("16");
-  await expect(page.locator("body")).toHaveCSS("font-family", /Barlow/);
+  await expect(page.locator("body")).toHaveCSS("font-family", /system-ui/);
   await second.close();
 });
 
@@ -681,4 +682,109 @@ test("expanded preview width stops at six columns", async ({ page }) => {
     .locator(".note-card")
     .evaluateAll((cards) => cards.map((c) => c.getBoundingClientRect().y));
   expect(positions.filter((y) => y === positions[0])).toHaveLength(6);
+});
+
+test("Edit line-number preference updates open notes immediately and persists", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.evaluate((key) => {
+    const d = JSON.parse(localStorage.getItem(key)!);
+    d.config.settings.mode = "edit";
+    localStorage.setItem(key, JSON.stringify(d));
+  }, key);
+  const note = await page.context().newPage();
+  await note.goto("/?vault=demo&note=Note_0000.md");
+  await expect(note.locator(".cm-lineNumbers")).toBeVisible();
+  await note.locator(".cm-content").press("ControlOrMeta+End");
+  await note.keyboard.type("\nPreserve my edit");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const toggle = page.getByRole("checkbox", {
+    name: /Line numbers in Edit mode/,
+  });
+  await toggle.uncheck();
+  await expect(note.locator(".cm-lineNumbers")).toHaveCount(0);
+  await expect(note.locator(".cm-content")).toContainText("Preserve my edit");
+  await page.reload();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect(note.locator(".cm-lineNumbers")).toBeVisible();
+  await note.getByRole("button", { name: "Close note to collection" }).click();
+  expect(
+    await page.evaluate(
+      (key) => JSON.parse(localStorage.getItem(key)!).files["Note_0000.md"],
+      key,
+    ),
+  ).toContain("Preserve my edit");
+  await note.close();
+});
+
+test("rename opens a separate titled window; extensionless names stay Markdown", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/?vault=demo&note=Note_0000.md");
+  await page.locator(".cm-content").press("ControlOrMeta+End");
+  await page.keyboard.type("\nLast pending words");
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  const open = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Rename note", exact: true }).click();
+  const dialog = await open;
+  await expect(dialog).toHaveTitle("Rename note...");
+  await expect(dialog.getByRole("textbox", { name: "Note name" })).toHaveValue(
+    "Note_0000.md",
+  );
+  await expect(page.locator(".cm-content")).toHaveAttribute(
+    "contenteditable",
+    "false",
+  );
+  await dialog.getByRole("textbox", { name: "Note name" }).fill("Renamed");
+  await dialog.getByRole("button", { name: "Rename", exact: true }).click();
+  await expect(page.locator(".note-drag")).toHaveText("Renamed");
+  await expect(page.locator(".line-live-preview")).toBeVisible();
+  let d = await page.evaluate(
+    (key) => JSON.parse(localStorage.getItem(key)!),
+    key,
+  );
+  expect(d.files["Renamed.md"]).toContain("Last pending words");
+  expect(d.files["Note_0000.md"]).toBeUndefined();
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  const next = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Rename note", exact: true }).click();
+  const textDialog = await next;
+  await textDialog
+    .getByRole("textbox", { name: "Note name" })
+    .fill("Renamed.toml");
+  await textDialog.getByRole("button", { name: "Rename", exact: true }).click();
+  await expect(page.locator(".note-drag")).toHaveText("Renamed.toml");
+  await expect(page.locator(".cm-lineNumbers")).toBeVisible();
+  d = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)!), key);
+  expect(d.files["Renamed.toml"]).toContain("Last pending words");
+  expect(d.files["Renamed.toml.md"]).toBeUndefined();
+});
+
+test("cancelling or failing a rename leaves the original note safe and editable", async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto("/?vault=demo&note=Note_0000.md");
+  await page.getByRole("button", { name: "Note menu", exact: true }).click();
+  const open = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Rename note", exact: true }).click();
+  const dialog = await open;
+  await dialog.getByRole("textbox", { name: "Note name" }).fill("Note_0001");
+  await dialog.getByRole("button", { name: "Rename", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("already exists");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator(".cm-content")).toHaveAttribute(
+    "contenteditable",
+    "true",
+  );
+  expect(
+    await page.evaluate(
+      (key) => JSON.parse(localStorage.getItem(key)!).files["Note_0000.md"],
+      key,
+    ),
+  ).toContain("# Note 0");
 });

@@ -51,3 +51,17 @@ Follow-up validation includes bundled font loading, global/vault color inheritan
 - [x] Final packaged native checks, push main and refreshed RPM revision 7.
 
 Validation: 31 Rust core tests, 9 editor tests, 33 browser tests and 4 release tests passed. The final spacing adjustment passed targeted layout/font/six-column checks. Windows cross-compilation, packaged MCP stdio checks, RPM/DEB payload permissions, and native Linux close/save/blank cleanup/quit/restore checks passed. RPM package revision: 7.
+
+
+## 0.5 beta
+
+- [x] Restore system app typography; remove bundled font assets; Generic families before System fonts.
+- [x] Migrate removed bundled font IDs to sans while retaining user-selected system fonts.
+- [x] Persisted global Edit-mode line-number toggle, including already-open notes.
+- [x] Separate titled Rename note... window; save before opening, cancel safely, reject collisions.
+- [x] Extensionless rename gets .md; explicit formats stay unchanged.
+- [x] README screenshot additions deferred at the user's request.
+- [x] Validate native rename, packaged MCP and RPM/DEB permissions.
+- [ ] Publish 0.5 Beta and verify all release assets.
+
+Validation: 32 Rust core tests, 9 editor tests, 36 browser tests and 4 release tests passed. Windows cross-compilation passed. The installed Linux package passed separate-window rename with automatic .md extension, save/close/quit/restore checks, MCP stdio checks and RPM/DEB payload permission checks. A sample signature verified against the embedded release public key. Version: 0.5.0; RPM revision: 1.

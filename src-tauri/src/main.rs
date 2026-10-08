@@ -21,11 +21,20 @@ struct Draft {
     vault: String,
     path: String,
 }
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameRequest {
+    vault_id: String,
+    path: String,
+    expected: String,
+    parent: String,
+}
 struct Shared {
     core: Core,
     quitting: Mutex<Option<BTreeSet<String>>>,
     abort_quit: Mutex<bool>,
     drafts: Mutex<BTreeMap<String, Draft>>,
+    renames: Mutex<BTreeMap<String, RenameRequest>>,
     library: sticky_core::library::Library,
 }
 fn label(id: &str, path: &str) -> String {
@@ -489,6 +498,9 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
                     }
                     c.settings.mode = mode.into();
                 }
+                if let Some(line_numbers) = a["lineNumbers"].as_bool() {
+                    c.settings.line_numbers = line_numbers;
+                }
                 if let Some(pins) = a.get("toolbarPins") {
                     c.settings.toolbar_pins = serde_json::from_value(pins.clone())?;
                 }
@@ -645,6 +657,90 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
             }
             changed = true;
             Value::Null
+        }
+        "open_rename" => {
+            let document = core.read(id()?, path()?)?;
+            if document.revision != string(a, "expected")? {
+                return Err(sticky_core::Error::Conflict);
+            }
+            let parent_label = window_label(app, id()?, path()?);
+            let parent = app
+                .get_webview_window(&parent_label)
+                .ok_or_else(|| message("The note window is no longer open"))?;
+            let name = format!("rename-{}", uuid::Uuid::new_v4());
+            let request = RenameRequest {
+                vault_id: id()?.into(),
+                path: path()?.into(),
+                expected: document.revision,
+                parent: parent_label,
+            };
+            app.state::<Shared>()
+                .renames
+                .lock()
+                .unwrap()
+                .insert(name.clone(), request);
+            let built = WebviewWindowBuilder::new(
+                app,
+                &name,
+                WebviewUrl::App(format!("index.html?rename={}", encode(&name)).into()),
+            )
+            .title("Rename note...")
+            .inner_size(460.0, 230.0)
+            .resizable(false)
+            .minimizable(false)
+            .maximizable(false)
+            .parent(&parent)
+            .map_err(|e| message(e.to_string()))?
+            .center()
+            .build();
+            match built {
+                Ok(window) => {
+                    window_icon(app, &window);
+                    Value::Null
+                }
+                Err(e) => {
+                    app.state::<Shared>().renames.lock().unwrap().remove(&name);
+                    return Err(message(e.to_string()));
+                }
+            }
+        }
+        "rename_context" => {
+            let request = app
+                .state::<Shared>()
+                .renames
+                .lock()
+                .unwrap()
+                .get(string(a, "request")?)
+                .cloned()
+                .ok_or_else(|| message("This rename dialog has closed"))?;
+            json!(request)
+        }
+        "rename_cancel" => {
+            if let Some(w) = app.get_webview_window(string(a, "request")?) {
+                w.destroy().map_err(|e| message(e.to_string()))?;
+            }
+            Value::Null
+        }
+        "rename_submit" => {
+            let name = string(a, "request")?;
+            let request = app
+                .state::<Shared>()
+                .renames
+                .lock()
+                .unwrap()
+                .get(name)
+                .cloned()
+                .ok_or_else(|| message("This rename dialog has closed"))?;
+            let doc = route(
+                app,
+                core,
+                "rename_note",
+                &json!({ "vaultId": request.vault_id, "path": request.path, "expected": request.expected, "newPath": string(a, "newPath")? }),
+            )?;
+            if let Some(w) = app.get_webview_window(name) {
+                w.destroy().map_err(|e| message(e.to_string()))?;
+            }
+            doc
         }
         "rename_note" => {
             let d = core.rename(
@@ -896,6 +992,7 @@ fn main() {
             quitting: Mutex::new(None),
             abort_quit: Mutex::new(false),
             drafts: Mutex::new(BTreeMap::new()),
+            renames: Mutex::new(BTreeMap::new()),
             library: sticky_core::library::Library::default(),
         })
         .invoke_handler(tauri::generate_handler![
@@ -974,6 +1071,23 @@ fn main() {
             Ok(())
         })
         .on_window_event(|w, event| {
+            if w.label().starts_with("rename-") {
+                if let tauri::WindowEvent::Destroyed = event {
+                    let request = w
+                        .app_handle()
+                        .state::<Shared>()
+                        .renames
+                        .lock()
+                        .unwrap()
+                        .remove(w.label());
+                    if let Some(request) = request {
+                        if let Some(parent) = w.app_handle().get_webview_window(&request.parent) {
+                            let _ = parent.emit("rename-cancelled", ());
+                        }
+                    }
+                }
+                return;
+            }
             if w.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
