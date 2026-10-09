@@ -259,6 +259,7 @@ function NoteWindow({
   const current = useRef("");
   const saved = useRef<Document | null>(null);
   const pending = useRef<Promise<void> | null>(null);
+  const documentGeneration = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const styleRef = useRef(style);
   styleRef.current = style;
@@ -283,6 +284,7 @@ function NoteWindow({
         .catch((e) => setError(String(e)));
   }, [menu]);
   const flush = useCallback(async () => {
+    editor.current?.commitPending();
     if (timer.current) {
       clearTimeout(timer.current);
       timer.current = null;
@@ -293,6 +295,10 @@ function NoteWindow({
     }
     if (pending.current) await pending.current;
     while (saved.current && current.current !== saved.current.content) {
+      if (pending.current) {
+        await pending.current;
+        continue;
+      }
       const content = current.current,
         expected = saved.current.revision;
       setStatus("Saving…");
@@ -306,6 +312,7 @@ function NoteWindow({
             requestId: crypto.randomUUID(),
           });
           saved.current = d;
+          documentGeneration.current++;
           setDocument(d);
           setStatus("Saved locally");
           setError("");
@@ -327,6 +334,7 @@ function NoteWindow({
     if (closing.current) return;
     closing.current = true;
     setFinishing(true);
+    editor.current?.commitPending();
     editor.current?.setReadOnly(true);
     try {
       await flush();
@@ -340,6 +348,7 @@ function NoteWindow({
   const rename = useCallback(async () => {
     closing.current = true;
     setFinishing(true);
+    editor.current?.commitPending();
     editor.current?.setReadOnly(true);
     try {
       await flush();
@@ -363,6 +372,7 @@ function NoteWindow({
         const freshConfig = await call<Config>("bootstrap");
         if (live) {
           saved.current = d;
+          documentGeneration.current++;
           current.current = d.content;
           setDocument(d);
           setText(d.content);
@@ -395,6 +405,7 @@ function NoteWindow({
     const quitListener = listen("prepare-quit", () => {
       closing.current = true;
       setFinishing(true);
+      editor.current?.commitPending();
       editor.current?.setReadOnly(true);
       void flush()
         .then(() => call("cleanup_new_note", { vaultId, path }))
@@ -445,13 +456,24 @@ function NoteWindow({
     };
   }, [vaultId]);
   useEffect(() => {
+    let live = true;
+    let reading = false;
     const interval = setInterval(() => {
-      if (pending.current || !saved.current) return;
+      if (reading || pending.current || closing.current || !saved.current) return;
+      const generation = documentGeneration.current;
+      const revision = saved.current.revision;
+      reading = true;
       void call<Document>("read_note", { vaultId, path })
         .then((d) => {
+          // A read may have started before typing, saving or closing the note.
+          // Never let its old snapshot replace a newer editor/save generation.
+          if (!live || closing.current || pending.current ||
+              generation !== documentGeneration.current ||
+              revision !== saved.current?.revision) return;
           if (d.revision === saved.current?.revision) return;
           if (current.current === saved.current?.content) {
             saved.current = d;
+            documentGeneration.current++;
             current.current = d.content;
             setDocument(d);
             setText(d.content);
@@ -463,9 +485,12 @@ function NoteWindow({
             );
           }
         })
-        .catch((e) => setError(String(e)));
+        .catch((e) => {
+          if (live && generation === documentGeneration.current) setError(String(e));
+        })
+        .finally(() => { reading = false; });
     }, 2500);
-    return () => clearInterval(interval);
+    return () => { live = false; clearInterval(interval); };
   }, [vaultId, path]);
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
@@ -496,6 +521,7 @@ function NoteWindow({
     return () => window.removeEventListener("keydown", listener, true);
   }, [flush, rename, vaultId, destinationVault]);
   const change = (s: string) => {
+    documentGeneration.current++;
     current.current = s;
     setText(s);
     if (!saved.current || s === saved.current.content) return;
@@ -639,6 +665,7 @@ function NoteWindow({
       await call("journal", { vaultId, path, content: current.current });
       const d = await call<Document>("read_note", { vaultId, path });
       saved.current = d;
+      documentGeneration.current++;
       current.current = d.content;
       setText(d.content);
       setDocument(d);
@@ -1019,6 +1046,10 @@ function SettingsDialog({
   initialTab?: string;
 }) {
   const [settings, setSettings] = useState<Settings>(config.settings);
+  const dirtySettings = useRef<Partial<Settings>>({});
+  useEffect(() => {
+    setSettings({ ...config.settings, ...dirtySettings.current });
+  }, [config.settings]);
   const dark = useDark(settings.appearance);
   const [tab, setTab] = useState(initialTab);
   useEffect(() => setTab(initialTab), [initialTab]);
@@ -1033,12 +1064,21 @@ function SettingsDialog({
     verificationUri: string;
     interval: number;
   } | null>(null);
-  const active = config.vaults.find((v) => v.id === config.activeVault);
+  const managedVaults = config.vaults.filter((v) => v.github);
+  const [syncVaultId, setSyncVaultId] = useState(
+    managedVaults.find((v) => v.id === config.activeVault)?.id ?? managedVaults[0]?.id ?? "",
+  );
+  const active = managedVaults.find((v) => v.id === syncVaultId) ?? managedVaults[0];
   const [frequency, setFrequency] = useState(
     active?.github?.frequencyMinutes ?? 5,
   );
   const [exitSync, setExitSync] = useState(active?.github?.onExit ?? true);
   const [paused, setPaused] = useState(active?.github?.paused ?? false);
+  useEffect(() => {
+    setFrequency(active?.github?.frequencyMinutes ?? 5);
+    setExitSync(active?.github?.onExit ?? true);
+    setPaused(active?.github?.paused ?? false);
+  }, [active?.id, active?.github?.frequencyMinutes, active?.github?.onExit, active?.github?.paused]);
   const run = async (fn: () => Promise<unknown>, success?: string) => {
     setBusy(true);
     setError("");
@@ -1106,14 +1146,27 @@ function SettingsDialog({
     appearanceQueue.current = appearanceQueue.current.then(async () => {
       try {
         await call("set_appearance", { appearance });
+        if (dirtySettings.current.appearance === appearance)
+          delete dirtySettings.current.appearance;
       } catch (e) {
         setError(String(e));
         await refresh();
       }
     });
   };
-  const field = (patch: Partial<Settings>) =>
+  const field = (patch: Partial<Settings>) => {
+    dirtySettings.current = { ...dirtySettings.current, ...patch };
     setSettings((s) => ({ ...s, ...patch }));
+  };
+  const savePreferences = async () => {
+    await appearanceQueue.current;
+    const patch = { ...dirtySettings.current };
+    if (!Object.keys(patch).length) return;
+    await call("patch_settings", { patch });
+    for (const key of Object.keys(patch) as (keyof Settings)[]) {
+      if (dirtySettings.current[key] === patch[key]) delete dirtySettings.current[key];
+    }
+  };
   return (
     <section
       className="settings-dialog settings-pane"
@@ -1158,7 +1211,7 @@ function SettingsDialog({
               disabled={busy}
               onClick={() =>
                 void run(
-                  () => call("set_settings", { settings }),
+                  savePreferences,
                   "Update preferences saved.",
                 )
               }
@@ -1220,7 +1273,11 @@ function SettingsDialog({
                 onChange={(e) => {
                   const lineNumbers = e.target.checked;
                   field({ lineNumbers });
-                  void run(() => call("editor_preferences", { lineNumbers }));
+                  void run(async () => {
+                    await call("editor_preferences", { lineNumbers });
+                    if (dirtySettings.current.lineNumbers === lineNumbers)
+                      delete dirtySettings.current.lineNumbers;
+                  });
                 }}
               />
             </label>
@@ -1419,7 +1476,7 @@ function SettingsDialog({
                   disabled={busy}
                   onClick={() =>
                     void run(async () => {
-                      await call("set_settings", { settings });
+                      await savePreferences();
                       setDevice(
                         await call("github_start", {
                           clientId: settings.githubClientId,
@@ -1484,6 +1541,13 @@ function SettingsDialog({
             </div>
             {active?.github && (
               <div className="sync-options">
+                <label className="setting-row">
+                  GitHub vault
+                  <select aria-label="GitHub vault" value={active.id}
+                    onChange={(e) => setSyncVaultId(e.target.value)}>
+                    {managedVaults.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                  </select>
+                </label>
                 <h3>Sync · {active.name}</h3>
                 <label className="setting-row">
                   <span>
@@ -1613,7 +1677,7 @@ function SettingsDialog({
           disabled={busy}
           onClick={() =>
             void run(
-              () => call("set_settings", { settings }),
+              savePreferences,
               "Preferences saved.",
             )
           }

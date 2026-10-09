@@ -14,6 +14,9 @@ use std::{
 use walkdir::WalkDir;
 
 pub const NOTE_LIMIT: usize = 100 * 1024;
+// Stable lock files must never be unlinked while another process can use them.
+// Hash request IDs into a bounded set instead of creating one inode per save.
+const REQUEST_LOCK_STRIPES: usize = 64;
 
 pub fn read_text(path: &Path) -> Result<String> {
     let mut bytes = Vec::new();
@@ -214,6 +217,27 @@ pub struct Config {
     pub styles: BTreeMap<String, NoteStyle>,
     pub recent: Vec<NoteRef>,
 }
+fn default_note_style(config: &Config, id: &str, path: &str) -> NoteStyle {
+    NoteStyle {
+        palette: config.settings.palette.clone(),
+        color: config
+            .vaults
+            .iter()
+            .find(|v| v.id == id)
+            .and_then(|v| v.default_color)
+            .unwrap_or(config.settings.color),
+        font: config.settings.font.clone(),
+        font_size: config.settings.font_size,
+        mode: if is_markdown(path) {
+            config.settings.mode.clone()
+        } else {
+            "edit".into()
+        },
+        width: config.settings.width,
+        height: config.settings.height,
+        ..NoteStyle::default()
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteRef {
@@ -274,6 +298,14 @@ impl Core {
             .open(self.data.join("locks").join(revision(key.as_bytes())))?;
         f.lock_exclusive()?;
         Ok(f)
+    }
+    fn request_lock(&self, request: Option<&str>) -> Result<Option<File>> {
+        let Some(key) = request else {
+            return Ok(None);
+        };
+        self.receipt_path(key)?;
+        let stripe = blake3::hash(key.as_bytes()).as_bytes()[0] as usize % REQUEST_LOCK_STRIPES;
+        self.lock(&format!("request-stripe:{stripe}")).map(Some)
     }
     pub fn config(&self) -> Result<Config> {
         let _lock = self.lock("configuration")?;
@@ -581,13 +613,23 @@ impl Core {
         request: Option<&str>,
     ) -> Result<Document> {
         validate_content(content)?;
-        // Serialize automatic naming across app processes. Never overwrite a collision.
+        // Lock order: request stripe, vault naming, note path, recovery/config.
+        // Operations without a request ID do not need a request lock.
+        let _req = self.request_lock(request)?;
         let _names = self.lock(&format!("new-name:{id}"))?;
+        self.create_with_naming_lock(id, path, content, request)
+    }
+    // Callers hold this vault's naming lock and, if supplied, the request lock.
+    // Rename/move use this helper to avoid reacquiring a non-reentrant lock.
+    fn create_with_naming_lock(
+        &self,
+        id: &str,
+        path: Option<&str>,
+        content: &str,
+        request: Option<&str>,
+    ) -> Result<Document> {
+        validate_content(content)?;
         let fingerprint = revision(format!("create:{id}:{path:?}:{content}").as_bytes());
-        let _req = self.lock(&format!(
-            "request:{}",
-            request.unwrap_or(&uuid::Uuid::new_v4().to_string())
-        ))?;
         if let Some(d) = self.receipt(request, &fingerprint)? {
             return Ok(d);
         }
@@ -639,10 +681,7 @@ impl Core {
     ) -> Result<Document> {
         validate_content(content)?;
         let fingerprint = revision(format!("save:{id}:{path}:{expected}:{content}").as_bytes());
-        let _req = self.lock(&format!(
-            "request:{}",
-            request.unwrap_or(&uuid::Uuid::new_v4().to_string())
-        ))?;
+        let _req = self.request_lock(request)?;
         if let Some(d) = self.receipt(request, &fingerprint)? {
             return Ok(d);
         }
@@ -683,7 +722,7 @@ impl Core {
         request: &str,
     ) -> Result<Document> {
         let fingerprint = revision(format!("append:{id}:{path}:{expected}:{text}").as_bytes());
-        let _req = self.lock(&format!("request:{request}"))?;
+        let _req = self.request_lock(Some(request))?;
         if let Some(d) = self.receipt(Some(request), &fingerprint)? {
             return Ok(d);
         }
@@ -816,6 +855,9 @@ impl Core {
     pub fn rename(&self, id: &str, path: &str, new_path: &str, expected: &str) -> Result<Document> {
         let normalized = note_filename(new_path);
         let new_path = normalized.as_str();
+        // Creation and rename both take naming before any path lock. Taking the
+        // source first would deadlock against a concurrent create of that path.
+        let _names = self.lock(&format!("new-name:{id}"))?;
         let source = self.note_path(id, path)?;
         let _lock = self.lock(&source.to_string_lossy())?;
         let d = self.read(id, path)?;
@@ -825,7 +867,7 @@ impl Core {
         if path == new_path {
             return Ok(d);
         }
-        let new = self.create(id, Some(new_path), &d.content, None)?;
+        let new = self.create_with_naming_lock(id, Some(new_path), &d.content, None)?;
         if revision(&fs::read(&source)?) != expected {
             return Err(Error::Conflict);
         }
@@ -863,25 +905,7 @@ impl Core {
         Ok(c.styles
             .get(&format!("{id}/{path}"))
             .cloned()
-            .unwrap_or_else(|| NoteStyle {
-                palette: c.settings.palette,
-                color: c
-                    .vaults
-                    .iter()
-                    .find(|v| v.id == id)
-                    .and_then(|v| v.default_color)
-                    .unwrap_or(c.settings.color),
-                font: c.settings.font,
-                font_size: c.settings.font_size,
-                mode: if is_markdown(path) {
-                    c.settings.mode
-                } else {
-                    "edit".into()
-                },
-                width: c.settings.width,
-                height: c.settings.height,
-                ..NoteStyle::default()
-            }))
+            .unwrap_or_else(|| default_note_style(&c, id, path)))
     }
     pub fn pinned(&self) -> Result<Vec<NoteRef>> {
         let c = self.config()?;
@@ -919,10 +943,18 @@ impl Core {
     }
     pub fn opened(&self, id: &str, path: &str, open: bool) -> Result<()> {
         self.note_path(id, path)?;
-        let mut s = self.style(id, path)?;
-        s.open = open;
         self.update_config(|c| {
-            c.styles.insert(format!("{id}/{path}"), s);
+            let key = format!("{id}/{path}");
+            if let Some(style) = c.styles.get_mut(&key) {
+                // Change only the lifecycle field in the latest configuration.
+                // A prior full-style snapshot could overwrite worker geometry
+                // or note appearance that changed while waiting for this lock.
+                style.open = open;
+            } else {
+                let mut style = default_note_style(c, id, path);
+                style.open = open;
+                c.styles.insert(key, style);
+            }
             if open {
                 c.recent.retain(|n| n.vault_id != id || n.path != path);
                 c.recent.insert(
@@ -1019,6 +1051,106 @@ fn validate_content(content: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        process::{Child, Command, Stdio},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    // Separate processes exercise the OS locks, and can be reaped on timeout
+    // without leaving a deadlocked test thread behind.
+    struct LockTestChild(Child);
+    impl LockTestChild {
+        fn finish(&mut self) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(status) = self.0.try_wait().unwrap() {
+                    assert!(status.success(), "Lock-test child failed: {status}");
+                    return;
+                }
+                assert!(Instant::now() < deadline, "Lock-test child deadlocked");
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+    impl Drop for LockTestChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn lock_child(
+        core: &Core,
+        vault: &Vault,
+        action: &str,
+        expected: &str,
+        ready: &Path,
+    ) -> LockTestChild {
+        LockTestChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::lock_operation_child", "--nocapture"])
+                .env("STICKY_LOCK_TEST_DATA", &core.data)
+                .env("STICKY_LOCK_TEST_VAULT", &vault.id)
+                .env("STICKY_LOCK_TEST_ACTION", action)
+                .env("STICKY_LOCK_TEST_REVISION", expected)
+                .env("STICKY_LOCK_TEST_READY", ready)
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    }
+    fn wait_ready(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !path.exists() {
+            assert!(Instant::now() < deadline, "Lock-test child did not start");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    #[test]
+    fn lock_operation_child() {
+        let Some(data) = std::env::var_os("STICKY_LOCK_TEST_DATA") else {
+            return;
+        };
+        let core = Core::new(data.into()).unwrap();
+        let id = std::env::var("STICKY_LOCK_TEST_VAULT").unwrap();
+        let action = std::env::var("STICKY_LOCK_TEST_ACTION").unwrap();
+        let expected = std::env::var("STICKY_LOCK_TEST_REVISION").unwrap();
+        let ready = std::env::var_os("STICKY_LOCK_TEST_READY").unwrap();
+        fs::write(ready, b"ready").unwrap();
+        match action.as_str() {
+            "rename" => {
+                let renamed = core.rename(&id, "A.md", "B.md", &expected).unwrap();
+                assert_eq!(renamed.content, "original");
+            }
+            "create-collision" => {
+                // Either it sees the original before rename, or creates a new A
+                // afterwards. It must never overwrite the original as B.
+                let _ = core.create(&id, Some("A.md"), "replacement", None);
+            }
+            "create-idempotent" => {
+                core.create(&id, None, "new note", Some("same-create"))
+                    .unwrap();
+            }
+            "append-idempotent" => {
+                let saved = core
+                    .append(&id, "A.md", &expected, " appended", "same-append")
+                    .unwrap();
+                assert_eq!(saved.content, "original appended");
+            }
+            move_action if move_action.starts_with("move:") => {
+                let destination = &move_action[5..];
+                core.move_notes(
+                    &[NoteRef {
+                        vault_id: id,
+                        path: "A.md".into(),
+                    }],
+                    destination,
+                )
+                .unwrap();
+            }
+            other => panic!("Unknown lock-test action: {other}"),
+        }
+    }
     fn fixture() -> (tempfile::TempDir, Core, Vault) {
         let d = tempfile::tempdir().unwrap();
         let core = Core::new(d.path().join("state")).unwrap();
@@ -1308,6 +1440,165 @@ mod tests {
         );
     }
     #[test]
+    fn concurrent_create_and_rename_do_not_invert_naming_and_path_locks() {
+        let (tmp, core, vault) = fixture();
+        let original = core
+            .create(&vault.id, Some("A.md"), "original", None)
+            .unwrap();
+        let naming = core.lock(&format!("new-name:{}", vault.id)).unwrap();
+        let rename_ready = tmp.path().join("rename-ready");
+        let mut rename = lock_child(&core, &vault, "rename", &original.revision, &rename_ready);
+        wait_ready(&rename_ready);
+        let create_ready = tmp.path().join("create-ready");
+        let mut create = lock_child(&core, &vault, "create-collision", "", &create_ready);
+        wait_ready(&create_ready);
+        // While naming is held, rename must not grab A's path lock. The old
+        // order grabbed A here, forming a cycle as soon as create took naming.
+        let source_key = core.resolve(&vault.id, "A.md").unwrap();
+        let source_lock = core
+            .data
+            .join("locks")
+            .join(revision(source_key.to_string_lossy().as_bytes()));
+        let probe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(source_lock)
+            .unwrap();
+        let mut source_was_available = true;
+        for _ in 0..20 {
+            if FileExt::try_lock_exclusive(&probe).is_ok() {
+                FileExt::unlock(&probe).unwrap();
+            } else {
+                source_was_available = false;
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(naming);
+        rename.finish();
+        create.finish();
+        assert!(source_was_available, "Rename held a path before naming");
+        assert_eq!(core.read(&vault.id, "B.md").unwrap().content, "original");
+        if let Ok(source) = core.read(&vault.id, "A.md") {
+            assert_eq!(source.content, "replacement");
+        }
+        assert!(core
+            .create(&vault.id, Some("B.md"), "overwrite", None)
+            .is_err());
+    }
+    #[test]
+    fn request_replays_are_idempotent_across_processes() {
+        let (tmp, core, vault) = fixture();
+        let original = core
+            .create(&vault.id, Some("A.md"), "original", None)
+            .unwrap();
+        for action in ["create-idempotent", "append-idempotent"] {
+            let mut first = lock_child(
+                &core,
+                &vault,
+                action,
+                &original.revision,
+                &tmp.path().join(format!("{action}-1")),
+            );
+            let mut second = lock_child(
+                &core,
+                &vault,
+                action,
+                &original.revision,
+                &tmp.path().join(format!("{action}-2")),
+            );
+            first.finish();
+            second.finish();
+        }
+        assert_eq!(core.list(&vault.id).unwrap().len(), 2);
+        assert_eq!(
+            core.read(&vault.id, "A.md").unwrap().content,
+            "original appended"
+        );
+        assert!(core
+            .append(
+                &vault.id,
+                "A.md",
+                &original.revision,
+                "different",
+                "same-append",
+            )
+            .is_err());
+    }
+    #[test]
+    fn cross_vault_move_takes_naming_before_source_paths() {
+        let (tmp, core, vault) = fixture();
+        fs::create_dir(tmp.path().join("destination")).unwrap();
+        let destination = core.register(&tmp.path().join("destination")).unwrap();
+        core.create(&vault.id, Some("A.md"), "original", None)
+            .unwrap();
+        let naming = core.lock(&format!("new-name:{}", destination.id)).unwrap();
+        let ready = tmp.path().join("move-ready");
+        let mut moving = lock_child(
+            &core,
+            &vault,
+            &format!("move:{}", destination.id),
+            "",
+            &ready,
+        );
+        wait_ready(&ready);
+        let source_key = core.resolve(&vault.id, "A.md").unwrap();
+        let probe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(
+                core.data
+                    .join("locks")
+                    .join(revision(source_key.to_string_lossy().as_bytes())),
+            )
+            .unwrap();
+        let mut source_was_available = true;
+        for _ in 0..20 {
+            if FileExt::try_lock_exclusive(&probe).is_ok() {
+                FileExt::unlock(&probe).unwrap();
+            } else {
+                source_was_available = false;
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(naming);
+        moving.finish();
+        assert!(source_was_available, "Move held a path before naming");
+        assert!(!core.resolve(&vault.id, "A.md").unwrap().exists());
+        assert_eq!(
+            core.read(&destination.id, "A.md").unwrap().content,
+            "original"
+        );
+    }
+    #[test]
+    fn unique_save_requests_use_bounded_persistent_locks() {
+        let (_tmp, core, vault) = fixture();
+        let mut doc = core
+            .create(&vault.id, Some("A.md"), "initial", None)
+            .unwrap();
+        let initial_locks = fs::read_dir(core.data.join("locks")).unwrap().count();
+        for i in 0..600 {
+            doc = core
+                .save(
+                    &vault.id,
+                    &doc.path,
+                    &doc.revision,
+                    &format!("edit {i}"),
+                    Some(&format!("save-{i}")),
+                )
+                .unwrap();
+        }
+        let locks = fs::read_dir(core.data.join("locks")).unwrap().count();
+        // A bounded stripe set plus one recovery and one receipt-retention lock.
+        assert!(locks <= initial_locks + REQUEST_LOCK_STRIPES + 2);
+        assert_eq!(
+            fs::read_dir(core.data.join("requests")).unwrap().count(),
+            512
+        );
+        assert_eq!(core.read(&vault.id, &doc.path).unwrap().content, "edit 599");
+    }
+    #[test]
     fn note_colors_are_independent_of_global_and_vault_defaults() {
         let (_root, core, vault) = fixture();
         core.update_config(|c| {
@@ -1336,6 +1627,99 @@ mod tests {
         assert_eq!(core.style(&vault.id, "next.md").unwrap().color, 3);
         assert!(core.set_vault_default_color(&vault.id, Some(16)).is_err());
         assert!(core.set_vault_default_color("missing", None).is_err());
+    }
+    #[test]
+    fn opening_merges_lifecycle_without_overwriting_concurrent_geometry() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Barrier,
+        };
+        let (_tmp, core, vault) = fixture();
+        core.create(&vault.id, Some("A.md"), "original", None)
+            .unwrap();
+        let key = format!("{}/A.md", vault.id);
+        core.update_config(|c| {
+            let mut style = default_note_style(c, &vault.id, "A.md");
+            style.width = 0.0;
+            style.color = 12;
+            style.font = "Custom system font".into();
+            style.pinned = true;
+            style.provisional = true;
+            c.styles.insert(key.clone(), style);
+            Ok(())
+        })
+        .unwrap();
+        let latest = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(2));
+        let geometry = {
+            let core = core.clone();
+            let key = key.clone();
+            let latest = latest.clone();
+            let start = start.clone();
+            thread::spawn(move || {
+                start.wait();
+                for version in 1..=100 {
+                    core.update_config(|c| {
+                        c.styles.get_mut(&key).unwrap().width = version as f64;
+                        // Publish under the same configuration lock so the
+                        // assertion below compares one consistent snapshot.
+                        latest.store(version, Ordering::SeqCst);
+                        Ok(())
+                    })
+                    .unwrap();
+                    thread::yield_now();
+                }
+            })
+        };
+        start.wait();
+        for i in 0..100 {
+            core.opened(&vault.id, "A.md", i % 2 == 0).unwrap();
+            core.update_config(|c| {
+                let style = &c.styles[&key];
+                assert_eq!(style.width, latest.load(Ordering::SeqCst) as f64);
+                assert_eq!(style.color, 12);
+                assert_eq!(style.font, "Custom system font");
+                assert!(style.pinned);
+                assert!(style.provisional);
+                Ok(())
+            })
+            .unwrap();
+        }
+        geometry.join().unwrap();
+    }
+    #[test]
+    fn opening_unstyled_notes_uses_current_settings_and_vault_defaults() {
+        let (_tmp, core, vault) = fixture();
+        core.create(&vault.id, Some("A.md"), "original", None)
+            .unwrap();
+        core.create(&vault.id, Some("config.toml"), "key = true", None)
+            .unwrap();
+        core.update_config(|c| {
+            c.settings.font = "Custom system font".into();
+            c.settings.font_size = 24.0;
+            c.settings.width = 520.0;
+            c.settings.mode = "view".into();
+            c.vaults[0].default_color = Some(9);
+            Ok(())
+        })
+        .unwrap();
+        core.opened(&vault.id, "A.md", true).unwrap();
+        core.opened(&vault.id, "config.toml", true).unwrap();
+        let config = core.config().unwrap();
+        for path in ["A.md", "config.toml"] {
+            let style = &config.styles[&format!("{}/{path}", vault.id)];
+            assert!(style.open);
+            assert_eq!(style.color, 9);
+            assert_eq!(style.font, "Custom system font");
+            assert_eq!(style.font_size, 24.0);
+            assert_eq!(style.width, 520.0);
+        }
+        assert_eq!(config.styles[&format!("{}/A.md", vault.id)].mode, "view");
+        assert_eq!(
+            config.styles[&format!("{}/config.toml", vault.id)].mode,
+            "edit"
+        );
+        assert_eq!(config.recent[0].path, "config.toml");
     }
     #[cfg(unix)]
     #[test]

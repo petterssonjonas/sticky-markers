@@ -1,11 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod attachments;
+mod geometry;
 mod platform;
 mod updates;
+mod webp_bounds;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 use sticky_core::{message, Core, NoteStyle, Result, Settings};
 use tauri::{
@@ -36,6 +39,8 @@ struct Shared {
     drafts: Mutex<BTreeMap<String, Draft>>,
     renames: Mutex<BTreeMap<String, RenameRequest>>,
     library: sticky_core::library::Library,
+    geometry: geometry::Worker,
+    asset_gate: Arc<tauri::async_runtime::Mutex<()>>,
 }
 fn label(id: &str, path: &str) -> String {
     format!(
@@ -157,6 +162,7 @@ fn open_note_at(
         .inner_size(s.width.max(340.0), s.height.max(240.0))
         .min_inner_size(340.0, 240.0);
     let w = builder.build().map_err(|e| e.to_string())?;
+    app.state::<Shared>().geometry.register(&name, id, path);
     window_icon(app, &w);
     if let (Some(x), Some(y)) = (s.x, s.y) {
         if let Ok(monitors) = w.available_monitors() {
@@ -338,6 +344,9 @@ fn request_quit(app: &AppHandle) {
                 .is_some_and(|q| q.is_empty())
             {
                 let core = app.state::<Shared>().core.clone();
+                if let Err(error) = app.state::<Shared>().geometry.flush() {
+                    eprintln!("Could not finish saving note window placement: {error}");
+                }
                 let (tx, rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
                     let mut errors = Vec::new();
@@ -378,6 +387,39 @@ fn request_quit(app: &AppHandle) {
 fn string<'a>(a: &'a Value, k: &str) -> Result<&'a str> {
     a[k].as_str().ok_or_else(|| message(format!("Missing {k}")))
 }
+fn validate_settings(s: &Settings) -> Result<()> {
+    if !(340.0..=1600.0).contains(&s.width)
+        || !(240.0..=1600.0).contains(&s.height)
+        || !(10.0..=48.0).contains(&s.font_size)
+        || s.color > 15
+    {
+        return Err(message(
+            "Note size or font size is outside its supported range",
+        ));
+    }
+    if !["edit", "view"].contains(&s.mode.as_str())
+        || !["system", "light", "dark"].contains(&s.appearance.as_str())
+    {
+        return Err(message("Invalid editor mode or appearance"));
+    }
+    Ok(())
+}
+fn patched_settings(current: &Settings, patch: &Value) -> Result<Settings> {
+    let patch = patch
+        .as_object()
+        .ok_or_else(|| message("Settings patch must be an object"))?;
+    let mut merged = serde_json::to_value(current)?;
+    let object = merged.as_object_mut().unwrap();
+    for (key, value) in patch {
+        if !object.contains_key(key) {
+            return Err(message(format!("Unknown setting: {key}")));
+        }
+        object.insert(key.clone(), value.clone());
+    }
+    let settings = serde_json::from_value(merged)?;
+    validate_settings(&settings)?;
+    Ok(settings)
+}
 #[tauri::command]
 async fn dispatch(
     app: AppHandle,
@@ -385,7 +427,15 @@ async fn dispatch(
     args: Value,
 ) -> std::result::Result<Value, String> {
     let core = app.state::<Shared>().core.clone();
+    // Wait asynchronously before taking a blocking worker: only one attachment
+    // can hold its bounded file/decoder/encoding buffers at a time.
+    let asset_permit = if operation == "read_asset" {
+        Some(app.state::<Shared>().asset_gate.clone().lock_owned().await)
+    } else {
+        None
+    };
     tauri::async_runtime::spawn_blocking(move || {
+        let _asset_permit = asset_permit;
         route(&app, &core, &operation, &args).map_err(|e| e.to_string())
     })
     .await
@@ -574,6 +624,7 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
             )?;
             let doc = core.finish_new_note(saved)?;
             if doc.path != old_path {
+                app.state::<Shared>().geometry.renamed(&name, &doc.path);
                 for draft in app.state::<Shared>().drafts.lock().unwrap().values_mut() {
                     if draft.vault == id()? && draft.path == old_path {
                         draft.path = doc.path.clone();
@@ -761,26 +812,33 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
             if s.font_size < 10.0 || s.font_size > 48.0 || s.color > 15 {
                 return Err(message("Invalid note appearance"));
             }
-            let current = core.style(id()?, path()?)?;
-            s.width = current.width;
-            s.height = current.height;
-            s.x = current.x;
-            s.y = current.y;
-            s.open = current.open;
-            s.provisional = current.provisional;
-            if s.pinned && !current.pinned {
-                s.pinned_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-            }
-            if s.pinned && current.pinned {
-                s.pinned_at = current.pinned_at;
-            }
-            if !s.pinned {
-                s.pinned_at = 0;
-            }
-            core.set_style(id()?, path()?, s)?;
+            // Validate the vault path before taking the config transaction.
+            core.resolve(id()?, path()?)?;
+            let fallback = core.style(id()?, path()?)?;
+            let key = format!("{}/{}", id()?, path()?);
+            core.update_config(|c| {
+                let current = c.styles.get(&key).unwrap_or(&fallback);
+                s.width = current.width;
+                s.height = current.height;
+                s.x = current.x;
+                s.y = current.y;
+                s.open = current.open;
+                s.provisional = current.provisional;
+                s.pinned_at = if s.pinned {
+                    if current.pinned {
+                        current.pinned_at
+                    } else {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64
+                    }
+                } else {
+                    0
+                };
+                c.styles.insert(key, s);
+                Ok(())
+            })?;
             changed = true;
             Value::Null
         }
@@ -798,15 +856,7 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
         }
         "set_settings" => {
             let s: Settings = serde_json::from_value(a["settings"].clone())?;
-            if !(340.0..=1600.0).contains(&s.width)
-                || !(240.0..=1600.0).contains(&s.height)
-                || !(10.0..=48.0).contains(&s.font_size)
-                || s.color > 15
-            {
-                return Err(message(
-                    "Note size or font size is outside its supported range",
-                ));
-            }
+            validate_settings(&s)?;
             core.update_config(|c| {
                 c.settings = s;
                 Ok(())
@@ -814,31 +864,17 @@ fn route(app: &AppHandle, core: &Core, op: &str, a: &Value) -> Result<Value> {
             changed = true;
             Value::Null
         }
+        "patch_settings" => {
+            core.update_config(|c| {
+                c.settings = patched_settings(&c.settings, &a["patch"])?;
+                Ok(())
+            })?;
+            changed = true;
+            Value::Null
+        }
         "read_asset" => {
             let p = core.resolve(id()?, path()?)?;
-            let b = std::fs::read(p)?;
-            if b.len() > 20 * 1024 * 1024 {
-                return Err(message("Attachment is too large"));
-            }
-            let mime = match path()?
-                .rsplit('.')
-                .next()
-                .unwrap_or("")
-                .to_lowercase()
-                .as_str()
-            {
-                "png" => "image/png",
-                "jpg" | "jpeg" => "image/jpeg",
-                "gif" => "image/gif",
-                "webp" => "image/webp",
-                "svg" => "image/svg+xml",
-                _ => return Err(message("Not an image")),
-            };
-            use base64::Engine;
-            json!(format!(
-                "data:{mime};base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(b)
-            ))
+            json!(attachments::read(&p)?)
         }
         "export_note" => {
             let d = core.read(id()?, path()?)?;
@@ -994,6 +1030,8 @@ fn main() {
             drafts: Mutex::new(BTreeMap::new()),
             renames: Mutex::new(BTreeMap::new()),
             library: sticky_core::library::Library::default(),
+            geometry: geometry::Worker::start(core.clone()),
+            asset_gate: Arc::new(tauri::async_runtime::Mutex::new(())),
         })
         .invoke_handler(tauri::generate_handler![
             dispatch,
@@ -1100,6 +1138,7 @@ fn main() {
             }
             if let tauri::WindowEvent::Destroyed = event {
                 let shared = w.app_handle().state::<Shared>();
+                shared.geometry.closed(w.label());
                 shared
                     .drafts
                     .lock()
@@ -1107,32 +1146,29 @@ fn main() {
                     .retain(|token, d| label(&d.vault, token) != w.label());
                 return;
             }
-            let core = w.app_handle().state::<Shared>().core.clone();
-            if let Ok(c) = core.config() {
-                for v in c.vaults {
-                    for (key, mut s) in c.styles.clone() {
-                        let prefix = format!("{}/", v.id);
-                        if let Some(path) = key.strip_prefix(&prefix) {
-                            if window_label(w.app_handle(), &v.id, path) != w.label() {
-                                continue;
-                            }
-                            let scale = w.scale_factor().unwrap_or(1.0);
-                            match event {
-                                tauri::WindowEvent::Resized(size) => {
-                                    s.width = size.width as f64 / scale;
-                                    s.height = size.height as f64 / scale;
-                                }
-                                tauri::WindowEvent::Moved(pos) => {
-                                    s.x = Some(pos.x as f64 / scale);
-                                    s.y = Some(pos.y as f64 / scale);
-                                }
-                                _ => continue,
-                            }
-                            let _ = core.set_style(&v.id, path, s);
-                        }
+            // Filter before looking up state or calling native APIs. Irrelevant
+            // focus/scale/theme events do no configuration or filesystem work.
+            let change = match event {
+                tauri::WindowEvent::Resized(size) => {
+                    let scale = w.scale_factor().unwrap_or(1.0);
+                    geometry::Change {
+                        size: Some((size.width as f64 / scale, size.height as f64 / scale)),
+                        position: None,
                     }
                 }
-            }
+                tauri::WindowEvent::Moved(pos) => {
+                    let scale = w.scale_factor().unwrap_or(1.0);
+                    geometry::Change {
+                        size: None,
+                        position: Some((pos.x as f64 / scale, pos.y as f64 / scale)),
+                    }
+                }
+                _ => return,
+            };
+            w.app_handle()
+                .state::<Shared>()
+                .geometry
+                .record(w.label(), change);
         })
         .build(tauri::generate_context!())
         .expect("Cannot start Sticky Markers");
@@ -1152,4 +1188,22 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    #[test]
+    fn partial_settings_preserve_concurrent_editor_preferences() {
+        let mut current = Settings::default();
+        current.mode = "edit".into();
+        current.toolbar_pins = vec!["code".into()];
+        let changed = patched_settings(&current, &json!({"fontSize": 24.0})).unwrap();
+        assert_eq!(changed.mode, "edit");
+        assert_eq!(changed.toolbar_pins, ["code"]);
+        assert_eq!(changed.font_size, 24.0);
+        assert!(patched_settings(&current, &json!({"unknown": true})).is_err());
+        assert!(patched_settings(&current, &json!({"width": 1})).is_err());
+        assert!(patched_settings(&current, &json!({"fontSize": null})).is_err());
+    }
 }

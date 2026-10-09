@@ -776,7 +776,9 @@ test("cancelling or failing a rename leaves the original note safe and editable"
   await dialog.getByRole("textbox", { name: "Note name" }).fill("Note_0001");
   await dialog.getByRole("button", { name: "Rename", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("already exists");
-  await dialog.getByRole("button", { name: "Cancel" }).click();
+  const closed = dialog.waitForEvent("close");
+  await dialog.getByRole("button", { name: "Cancel" }).click({ noWaitAfter: true });
+  await closed;
   await expect(page.locator(".cm-content")).toHaveAttribute(
     "contenteditable",
     "true",

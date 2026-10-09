@@ -55,7 +55,7 @@ function load(): Demo {
       },
     ],
     activeVault: "demo",
-    settings: defaults,
+    settings: { ...defaults, toolbarPins: [] },
     styles: {},
     recent: [],
   };
@@ -474,6 +474,9 @@ async function demoCall<T>(
     }
     case "set_settings":
       d.config.settings = args.settings as Settings;
+      break;
+    case "patch_settings":
+      d.config.settings = { ...d.config.settings, ...(args.patch as Partial<Settings>) };
       break;
     case "select_vault":
       d.config.activeVault = id;

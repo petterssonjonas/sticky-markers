@@ -1,6 +1,6 @@
 {
   "name": "sticky-markers",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -26,7 +26,7 @@
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
     "@tauri-apps/plugin-opener": "^2.5.0",
-    "katex": "^0.16.22",
+    "katex": "^0.18.2",
     "lucide-react": "^0.468.0",
     "mermaid": "^11.9.0",
     "react": "^19.1.0",
@@ -41,6 +41,9 @@
     "remark-math": "^6.0.0",
     "remark-parse": "^11.0.0",
     "unified": "^11.0.5"
+  },
+  "overrides": {
+    "katex": "$katex"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

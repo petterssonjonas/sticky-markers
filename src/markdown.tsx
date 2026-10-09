@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, useRef, memo } from "react";
+import { Component, useEffect, useId, useState, useRef, memo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -7,7 +7,8 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import { call, external } from "./api";
+import { external } from "./api";
+import { attachmentPath, decodeLink, loadAttachment } from "./attachment-loader";
 const schema = {
   ...defaultSchema,
   tagNames: [...(defaultSchema.tagNames ?? []), "u"],
@@ -41,7 +42,7 @@ export function wikiMarkdown(s: string) {
   return s.replace(/(!?)\[\[([^\]]+)\]\]/g, (_, embed: string, raw: string) => {
     const [target, alias] = raw.split("|");
     if (embed && /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(target))
-      return `![${alias ?? target}](${encodeURI(target)})`;
+      return `![${alias ?? target}](${encodeURI(target).replace(/#/g, "%23").replace(/\?/g, "%3F")})`;
     return `[${alias ?? target}](#wiki:${encodeURIComponent(target)})`;
   });
 }
@@ -93,45 +94,66 @@ function Image({
   vaultId: string;
   path: string;
 }) {
+  const host = useRef<HTMLSpanElement>(null);
+  const [near, setNear] = useState(false);
   const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [size, setSize] = useState<{ width: number; height: number }>();
   useEffect(() => {
-    let live = true;
-    if (!src) return;
+    if (!host.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => setNear(entries.some((entry) => entry.isIntersecting)),
+      { rootMargin: "100px" },
+    );
+    observer.observe(host.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    setUrl("");
+    setError("");
+    if (!src || !near) return;
     if (/^https?:\/\//i.test(src)) {
-      setUrl(src);
+      if (decodeLink(src)) setUrl(src);
+      else setError("Invalid image URL");
       return;
     }
-    const parent = path.split("/").slice(0, -1);
-    for (const p of decodeURI(src).split("/")) {
-      if (p === "..") parent.pop();
-      else if (p !== ".") parent.push(p);
-    }
-    call<string>("read_asset", { vaultId, path: parent.join("/") })
+    const relative = attachmentPath(src, path);
+    if (!relative) { setError("Invalid attachment path"); return; }
+    loadAttachment(vaultId, relative, controller.signal)
       .then((u) => {
-        if (live) setUrl(u);
+        if (!controller.signal.aborted) setUrl(u);
       })
-      .catch(() => {
-        if (live) setUrl("");
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setError(String(error));
       });
-    return () => {
-      live = false;
-    };
-  }, [src, vaultId, path]);
-  return url ? (
-    <img src={url} alt={alt ?? ""} loading="lazy" />
-  ) : (
-    <span className="missing-image">Attachment: {alt ?? src}</span>
-  );
+    return () => controller.abort();
+  }, [src, vaultId, path, near]);
+  // Release offscreen data URLs/decoded image buffers, retaining their last
+  // layout box so scrolling cannot collapse the document or cause jumping.
+  return <span ref={host} style={{ display: "inline-block", maxWidth: "100%", ...(size && !url ? size : {}) }}>
+    {url ? <img src={url} alt={alt ?? ""} loading="lazy" onLoad={(event) => {
+      const box = event.currentTarget.getBoundingClientRect();
+      setSize({ width: box.width, height: box.height });
+    }} onError={() => { setUrl(""); setError("Could not display image"); }} />
+      : (!size || error) && <span className="missing-image" title={error || undefined}>Attachment: {alt ?? src}</span>}
+  </span>;
 }
-export const Markdown = memo(function Markdown({
-  content,
-  dark,
-  vaultId,
-  path,
-  onWiki,
-  heading,
-  preview = false,
-}: {
+
+class MarkdownBoundary extends Component<{ content: string; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidUpdate(previous: Readonly<{ content: string; children: ReactNode }>) {
+    if (previous.content !== this.props.content && this.state.failed) this.setState({ failed: false });
+  }
+  render() {
+    return this.state.failed ? <div className="render-error" role="status">
+      Preview unavailable. Open the note in Edit mode to view its source.
+      <pre>{this.props.content.slice(0, 4096)}</pre>
+    </div> : this.props.children;
+  }
+}
+type MarkdownProps = {
   content: string;
   dark: boolean;
   vaultId: string;
@@ -139,7 +161,19 @@ export const Markdown = memo(function Markdown({
   onWiki: (target: string) => void;
   heading?: string;
   preview?: boolean;
-}) {
+};
+export const Markdown = memo(function Markdown(props: MarkdownProps) {
+  return <MarkdownBoundary content={props.content}><MarkdownContent {...props} /></MarkdownBoundary>;
+});
+function MarkdownContent({
+  content,
+  dark,
+  vaultId,
+  path,
+  onWiki,
+  heading,
+  preview = false,
+}: MarkdownProps) {
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (heading) root.current?.querySelector(`#${CSS.escape(headingSlug(heading))}`)?.scrollIntoView({ block: "start" });
@@ -173,10 +207,14 @@ export const Markdown = memo(function Markdown({
               onClick={(e) => {
                 if (href?.startsWith("#wiki:")) {
                   e.preventDefault();
-                  onWiki(decodeURIComponent(href.slice(6)));
+                  const target = decodeLink(href.slice(6), true);
+                  if (target !== undefined) onWiki(target);
                 } else if (href && !href.startsWith("#")) {
                   e.preventDefault();
-                  if (/\.md(?:#.*)?$/i.test(href)) onWiki(decodeURI(href));
+                  if (/\.md(?:#.*)?$/i.test(href)) {
+                    const target = decodeLink(href);
+                    if (target !== undefined) onWiki(target);
+                  }
                   else void external(href);
                 }
               }}
@@ -198,4 +236,4 @@ export const Markdown = memo(function Markdown({
       </ReactMarkdown>
     </div>
   );
-});
+}

@@ -4,6 +4,14 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
+
+// These bounds apply before local changes or a remote commit. Payloads are staged on
+// disk one at a time; no collection stores file contents.
+const SYNC_FILE_LIMIT: u64 = 20 * 1024 * 1024;
+const SYNC_VAULT_LIMIT: u64 = 256 * 1024 * 1024;
+const SYNC_FILE_COUNT_LIMIT: usize = 10_000;
+const API_METADATA_LIMIT: u64 = 4 * 1024 * 1024;
+const API_BLOB_LIMIT: u64 = 29 * 1024 * 1024;
 #[cfg(test)]
 thread_local! { static TEST_API: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) }; }
 
@@ -20,6 +28,10 @@ pub struct SyncConfig {
     pub last_sync: Option<u64>,
     #[serde(default)]
     pub baseline: BTreeMap<String, String>,
+    /// Git object identities corresponding to the last successful baseline.
+    /// Old configurations without this cache perform one bounded initial download.
+    #[serde(default)]
+    pub remote_blobs: BTreeMap<String, String>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
@@ -71,10 +83,11 @@ pub fn start_device(client_id: &str) -> Result<DeviceCode> {
     if !r.status().is_success() {
         return Err(message(format!("GitHub sign-in returned {}", r.status())));
     }
-    r.json().map_err(|e| message(e.to_string()))
+    serde_json::from_value(read_api_response(r, API_METADATA_LIMIT)?)
+        .map_err(|e| message(e.to_string()))
 }
 pub fn poll_device(client_id: &str, device_code: &str) -> Result<Value> {
-    let v: Value = client()?
+    let response = client()?
         .post("https://github.com/login/oauth/access_token")
         .header("Accept", "application/json")
         .form(&[
@@ -83,9 +96,8 @@ pub fn poll_device(client_id: &str, device_code: &str) -> Result<Value> {
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ])
         .send()
-        .map_err(|e| message(e.to_string()))?
-        .json()
         .map_err(|e| message(e.to_string()))?;
+    let v = read_api_response(response, API_METADATA_LIMIT)?;
     if let Some(t) = v["access_token"].as_str() {
         credential()?
             .set_password(t)
@@ -94,7 +106,29 @@ pub fn poll_device(client_id: &str, device_code: &str) -> Result<Value> {
     }
     Ok(json!({"pending":true,"error":v["error"],"description":v["error_description"]}))
 }
-fn api(method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
+fn read_api_response(response: reqwest::blocking::Response, limit: u64) -> Result<Value> {
+    if response.content_length().is_some_and(|size| size > limit) {
+        return Err(message(format!(
+            "GitHub response exceeds the {} MiB safety limit",
+            limit / 1024 / 1024
+        )));
+    }
+    let mut bytes = Vec::new();
+    response.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(message(format!(
+            "GitHub response exceeds the {} MiB safety limit",
+            limit / 1024 / 1024
+        )));
+    }
+    serde_json::from_slice(&bytes).map_err(|e| message(e.to_string()))
+}
+fn api_with_limit(
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+    limit: u64,
+) -> Result<Value> {
     let endpoint = "https://api.github.com".to_owned();
     #[cfg(test)]
     let endpoint = TEST_API.with(|a| a.borrow().clone()).unwrap_or(endpoint);
@@ -108,7 +142,7 @@ fn api(method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value
     }
     let r = request.send().map_err(|e| message(e.to_string()))?;
     let status = r.status();
-    let v: Value = r.json().map_err(|e| message(e.to_string()))?;
+    let v = read_api_response(r, limit)?;
     if !status.is_success() {
         return Err(message(format!(
             "GitHub {}: {}",
@@ -117,6 +151,9 @@ fn api(method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value
         )));
     }
     Ok(v)
+}
+fn api(method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
+    api_with_limit(method, path, body, API_METADATA_LIMIT)
 }
 pub fn account() -> Result<Value> {
     let v = api(reqwest::Method::GET, "/user", None)?;
@@ -162,6 +199,7 @@ pub fn create_vault(core: &Core, name: &str, path: &Path) -> Result<Vault> {
         paused: false,
         last_sync: None,
         baseline: BTreeMap::new(),
+        remote_blobs: BTreeMap::new(),
         error: None,
         conflicts: Vec::new(),
     };
@@ -194,6 +232,7 @@ pub fn reconnect(core: &Core, repository: &str, path: &Path) -> Result<Vault> {
             paused: false,
             last_sync: None,
             baseline: BTreeMap::new(),
+            remote_blobs: BTreeMap::new(),
             error: None,
             conflicts: Vec::new(),
         });
@@ -294,16 +333,21 @@ pub fn resolve_conflict(core: &Core, id: &str, path: &str, choice: &str) -> Resu
     if has_git_ancestor(Path::new(&v.path)) {
         return Err(message("Existing Git repositories are externally managed"));
     }
+    if v.github.is_none() {
+        return Err(message("This vault is externally managed"));
+    }
+    if !["local", "remote"].contains(&choice) {
+        return Err(message("Choose local or remote explicitly"));
+    }
+    let _global_lock = core.lock("github-payload")?;
+    let _sync_lock = core.lock(&format!("sync:{id}"))?;
+    let v = core.vault(id)?;
     let cfg = v
         .github
         .ok_or_else(|| message("This vault is externally managed"))?;
     if !cfg.conflicts.iter().any(|p| p == path) {
         return Err(message("This file has no recorded sync conflict"));
     }
-    if !["local", "remote"].contains(&choice) {
-        return Err(message("Choose local or remote explicitly"));
-    }
-    let _sync_lock = core.lock(&format!("sync:{id}"))?;
     let p = core.resolve(id, path)?;
     let repo = api(
         reqwest::Method::GET,
@@ -324,31 +368,52 @@ pub fn resolve_conflict(core: &Core, id: &str, path: &str, choice: &str) -> Resu
             }
         })
         .collect::<String>();
-    let remote = api(
+    let remote = api_with_limit(
         reqwest::Method::GET,
         &format!(
             "/repos/{}/contents/{}?ref={}",
             cfg.repository, encoded, cfg.branch
         ),
         None,
+        API_BLOB_LIMIT,
     );
+    let staging = tempfile::Builder::new()
+        .prefix("github-conflict-")
+        .tempdir_in(&core.data)?;
+    let mut blob_sha = None;
     let bytes = match remote {
-        Ok(value) => Some(
-            STANDARD
-                .decode(
-                    value["content"]
-                        .as_str()
-                        .ok_or_else(|| message("Remote content is unavailable"))?
-                        .replace('\n', ""),
-                )
-                .map_err(|e| message(e.to_string()))?,
-        ),
+        Ok(value) => {
+            let size = value["size"]
+                .as_u64()
+                .ok_or_else(|| message("Missing remote blob size"))?;
+            if size > SYNC_FILE_LIMIT || (!attachment(path) && size > crate::NOTE_LIMIT as u64) {
+                return Err(message("Remote conflict content exceeds its sync/editing size limit; both versions were kept unchanged"));
+            }
+            blob_sha = value["sha"].as_str().map(str::to_owned);
+            // The contents endpoint omits encoded content for larger files.
+            let blob = if value["encoding"] == "none" {
+                let sha = blob_sha
+                    .as_ref()
+                    .ok_or_else(|| message("Missing remote blob SHA"))?;
+                api_with_limit(
+                    reqwest::Method::GET,
+                    &format!("/repos/{}/git/blobs/{sha}", cfg.repository),
+                    None,
+                    API_BLOB_LIMIT,
+                )?
+            } else {
+                value
+            };
+            let file = stage_blob(&blob, path, size, staging.path())?
+                .ok_or_else(|| message("Remote conflict content is no longer editable text; both versions were kept unchanged"))?;
+            Some(read_sync_file(&file.path, SYNC_FILE_LIMIT)?)
+        }
         Err(e) if e.to_string().starts_with("GitHub 404") => None,
         Err(e) => return Err(e),
     };
     let _file_lock = core.lock(&p.to_string_lossy())?;
-    if let Ok(local) = fs::read(&p) {
-        core.recovery(id, path, &local)?;
+    if p.exists() {
+        core.recovery(id, path, &read_sync_file(&p, SYNC_FILE_LIMIT)?)?;
     }
     if let Some(b) = &bytes {
         core.recovery(id, path, b)?;
@@ -374,6 +439,11 @@ pub fn resolve_conflict(core: &Core, id: &str, path: &str, choice: &str) -> Resu
         } else {
             g.baseline.remove(path);
         }
+        if let Some(sha) = &blob_sha {
+            g.remote_blobs.insert(path.into(), sha.clone());
+        } else {
+            g.remote_blobs.remove(path);
+        }
         g.conflicts.retain(|p| p != path);
         if g.conflicts.is_empty() {
             g.error = None;
@@ -382,8 +452,50 @@ pub fn resolve_conflict(core: &Core, id: &str, path: &str, choice: &str) -> Resu
     })?;
     core.vault(id)
 }
-fn local_files(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
+#[derive(Debug)]
+struct LocalFile {
+    revision: String,
+    size: u64,
+    path: PathBuf,
+}
+#[derive(Debug)]
+struct RemoteFile {
+    revision: String,
+    size: u64,
+    sha: String,
+    staged: Option<PathBuf>,
+}
+#[derive(Default)]
+struct VaultBudget {
+    files: usize,
+    bytes: u64,
+}
+impl VaultBudget {
+    fn add(&mut self, size: u64, side: &str) -> Result<()> {
+        self.files += 1;
+        self.bytes = self.bytes.saturating_add(size);
+        if self.files > SYNC_FILE_COUNT_LIMIT || self.bytes > SYNC_VAULT_LIMIT {
+            return Err(message(format!(
+                "{side} GitHub vault exceeds the 10,000-file or 256 MiB sync safety limit; reduce this vault before retrying. No changes were applied."
+            )));
+        }
+        Ok(())
+    }
+}
+fn read_sync_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(message(format!(
+            "{} grew beyond its sync size limit; retry after reducing it",
+            path.display()
+        )));
+    }
+    Ok(bytes)
+}
+fn local_files(root: &Path) -> Result<BTreeMap<String, LocalFile>> {
     let mut files = BTreeMap::new();
+    let mut budget = VaultBudget::default();
     for e in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -399,21 +511,127 @@ fn local_files(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
             .map_err(|e| message(e.to_string()))?
             .to_string_lossy()
             .replace('\\', "/");
-        if supported(&path) {
-            let size = e.metadata().map_err(|e| message(e.to_string()))?.len();
-            if !attachment(&path) && size > crate::NOTE_LIMIT as u64 {
+        if !supported(&path) {
+            continue;
+        }
+        let size = e.metadata().map_err(|e| message(e.to_string()))?.len();
+        if !attachment(&path) && size > crate::NOTE_LIMIT as u64 {
+            continue;
+        }
+        if size > SYNC_FILE_LIMIT {
+            return Err(message(format!("{path} exceeds the 20 MiB sync limit")));
+        }
+        // Reject an aggregate excess using metadata before reading another payload.
+        budget.add(size, "Local")?;
+        let (hash, actual_size) = if attachment(&path) {
+            let mut reader = File::open(e.path())?;
+            let mut hasher = blake3::Hasher::new();
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut total = 0_u64;
+            loop {
+                let n = reader.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                total += n as u64;
+                if total > SYNC_FILE_LIMIT || total > size {
+                    return Err(message(format!("{path} changed size during sync; retry")));
+                }
+                hasher.update(&buffer[..n]);
+            }
+            (hasher.finalize().to_hex().to_string(), total)
+        } else {
+            let bytes = read_sync_file(e.path(), crate::NOTE_LIMIT as u64)?;
+            if !supported_data(&path, &bytes) {
                 continue;
             }
-            if size > 20 * 1024 * 1024 {
-                return Err(message(format!("{path} exceeds the 20 MiB sync limit")));
-            }
-            let b = fs::read(e.path())?;
-            if supported_data(&path, &b) {
-                files.insert(path, b);
-            }
+            (revision(&bytes), bytes.len() as u64)
+        };
+        if actual_size != size {
+            return Err(message(format!("{path} changed size during sync; retry")));
         }
+        files.insert(
+            path,
+            LocalFile {
+                revision: hash,
+                size,
+                path: e.path().into(),
+            },
+        );
     }
     Ok(files)
+}
+// GitHub wraps base64 content in newlines. Filter whitespace while decoding so
+// a second full encoded copy is never allocated.
+struct Base64Content<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+impl Read for Base64Content<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let mut written = 0;
+        while written < out.len() && self.offset < self.bytes.len() {
+            let b = self.bytes[self.offset];
+            self.offset += 1;
+            if !b.is_ascii_whitespace() {
+                out[written] = b;
+                written += 1;
+            }
+        }
+        Ok(written)
+    }
+}
+fn stage_blob(value: &Value, path: &str, size: u64, staging: &Path) -> Result<Option<LocalFile>> {
+    if value["encoding"].as_str().is_some_and(|e| e != "base64") {
+        return Err(message("GitHub returned an unsupported blob encoding"));
+    }
+    let content = value["content"]
+        .as_str()
+        .ok_or_else(|| message("Missing blob content"))?;
+    let source = Base64Content {
+        bytes: content.as_bytes(),
+        offset: 0,
+    };
+    let mut reader = base64::read::DecoderReader::new(source, &STANDARD);
+    let mut file = tempfile::NamedTempFile::new_in(staging)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let n = reader
+            .read(&mut buffer)
+            .map_err(|e| message(format!("Invalid GitHub blob: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > size || total > SYNC_FILE_LIMIT {
+            return Err(message(format!(
+                "Remote {path} exceeds its declared sync size; both versions were kept unchanged"
+            )));
+        }
+        file.write_all(&buffer[..n])?;
+        hasher.update(&buffer[..n]);
+    }
+    if total != size {
+        return Err(message(format!(
+            "Remote {path} does not match its declared size; both versions were kept unchanged"
+        )));
+    }
+    if !attachment(path)
+        && !supported_data(
+            path,
+            &read_sync_file(file.path(), crate::NOTE_LIMIT as u64)?,
+        )
+    {
+        return Ok(None);
+    }
+    let (_, staged) = file.keep().map_err(|e| message(e.to_string()))?;
+    Ok(Some(LocalFile {
+        revision: hasher.finalize().to_hex().to_string(),
+        size,
+        path: staged,
+    }))
 }
 #[derive(Debug, PartialEq)]
 enum Decision {
@@ -434,12 +652,22 @@ fn decide(base: Option<&String>, local: Option<&String>, remote: Option<&String>
     }
 }
 pub fn sync(core: &Core, id: &str) -> Result<Vault> {
-    let v = core.vault(id)?;
-    // This check precedes credentials, network requests, and file mutations.
-    let cfg = v.github.clone().ok_or_else(|| {
-        message("Externally managed vault: Sticky Markers never syncs this repository")
-    })?;
+    // Reject external vaults before credentials, network, or vault mutations.
+    if core.vault(id)?.github.is_none() {
+        return Err(message(
+            "Externally managed vault: Sticky Markers never syncs this repository",
+        ));
+    }
+    // A shared file lock bounds payload allocations across managed vaults and
+    // processes. Commands run on workers, so waiting does not block the UI thread.
+    let _global_lock = core.lock("github-payload")?;
     let _lock = core.lock(&format!("sync:{id}"))?;
+    // Another queued operation may have updated the baseline while we waited.
+    let v = core.vault(id)?;
+    let cfg = v
+        .github
+        .clone()
+        .ok_or_else(|| message("This vault is externally managed"))?;
     let result = sync_inner(core, &v, &cfg);
     if let Err(ref e) = result {
         core.update_config(|c| {
@@ -493,7 +721,17 @@ fn sync_inner(core: &Core, v: &Vault, cfg: &SyncConfig) -> Result<()> {
     if tree["truncated"] == true {
         return Err(message("Remote vault is too large to enumerate safely"));
     }
-    let mut remote = BTreeMap::new();
+    if cfg.baseline.len() > SYNC_FILE_COUNT_LIMIT || cfg.remote_blobs.len() > SYNC_FILE_COUNT_LIMIT
+    {
+        return Err(message(
+            "Saved GitHub baseline exceeds the 10,000-file sync safety limit",
+        ));
+    }
+    let local = local_files(Path::new(&v.path))?;
+    let mut remote_metadata = BTreeMap::new();
+    let mut budget = VaultBudget::default();
+    // Validate the entire tree's bounds before downloading any payload. Missing
+    // sizes cannot bypass the budget; duplicate paths are also rejected.
     for item in tree["tree"]
         .as_array()
         .ok_or_else(|| message("Missing remote file list"))?
@@ -503,7 +741,10 @@ fn sync_inner(core: &Core, v: &Vault, cfg: &SyncConfig) -> Result<()> {
             continue;
         }
         core.resolve(&v.id, path)?;
-        if !attachment(path) && item["size"].as_u64().unwrap_or(0) > crate::NOTE_LIMIT as u64 {
+        let size = item["size"]
+            .as_u64()
+            .ok_or_else(|| message("Missing remote blob size"))?;
+        if !attachment(path) && size > crate::NOTE_LIMIT as u64 {
             if cfg.baseline.contains_key(path) {
                 return Err(message(format!(
                     "Synced {path} exceeds the editing limit; both versions are kept unchanged"
@@ -511,78 +752,129 @@ fn sync_inner(core: &Core, v: &Vault, cfg: &SyncConfig) -> Result<()> {
             }
             continue;
         }
-        if item["size"].as_u64().unwrap_or(0) > 20 * 1024 * 1024 {
-            return Err(message(format!("Remote {path} exceeds the sync limit")));
+        if size > SYNC_FILE_LIMIT {
+            return Err(message(format!(
+                "Remote {path} exceeds the 20 MiB sync limit"
+            )));
         }
-        let blob = api(
+        budget.add(size, "Remote")?;
+        let blob_sha = item["sha"]
+            .as_str()
+            .ok_or_else(|| message("Missing blob SHA"))?;
+        if remote_metadata
+            .insert(path.to_owned(), (size, blob_sha.to_owned()))
+            .is_some()
+        {
+            return Err(message("GitHub returned duplicate file paths"));
+        }
+    }
+    // The directory is outside vaults and is removed on every success/error.
+    let staging = tempfile::Builder::new()
+        .prefix("github-sync-")
+        .tempdir_in(&core.data)?;
+    let mut remote = BTreeMap::new();
+    for (path, (size, blob_sha)) in remote_metadata {
+        if cfg.remote_blobs.get(&path) == Some(&blob_sha) {
+            if let Some(hash) = cfg.baseline.get(&path) {
+                remote.insert(
+                    path,
+                    RemoteFile {
+                        revision: hash.clone(),
+                        size,
+                        sha: blob_sha,
+                        staged: None,
+                    },
+                );
+                continue;
+            }
+        }
+        let blob = api_with_limit(
             reqwest::Method::GET,
-            &format!(
-                "/repos/{}/git/blobs/{}",
-                cfg.repository,
-                item["sha"]
-                    .as_str()
-                    .ok_or_else(|| message("Missing blob SHA"))?
-            ),
+            &format!("/repos/{}/git/blobs/{blob_sha}", cfg.repository),
             None,
+            API_BLOB_LIMIT,
         )?;
-        let b = STANDARD
-            .decode(blob["content"].as_str().unwrap_or("").replace('\n', ""))
-            .map_err(|e| message(e.to_string()))?;
-        if supported_data(path, &b) {
-            remote.insert(path.to_owned(), b);
-        } else if cfg.baseline.contains_key(path) {
+        if let Some(file) = stage_blob(&blob, &path, size, staging.path())? {
+            remote.insert(
+                path,
+                RemoteFile {
+                    revision: file.revision,
+                    size,
+                    sha: blob_sha,
+                    staged: Some(file.path),
+                },
+            );
+        } else if cfg.baseline.contains_key(&path) {
             return Err(message(format!(
                 "Synced {path} is no longer editable text; both versions are kept unchanged"
             )));
         }
     }
-    let local = local_files(Path::new(&v.path))?;
     for path in cfg.baseline.keys().chain(remote.keys()) {
         if !local.contains_key(path) && core.resolve(&v.id, path)?.exists() {
             return Err(message(format!("Local {path} is too large or is not editable text; sync left both versions unchanged")));
         }
     }
-    let lh = local
-        .iter()
-        .map(|(p, b)| (p.clone(), revision(b)))
-        .collect::<BTreeMap<_, _>>();
-    let rh = remote
-        .iter()
-        .map(|(p, b)| (p.clone(), revision(b)))
-        .collect::<BTreeMap<_, _>>();
     let paths = cfg
         .baseline
         .keys()
-        .chain(lh.keys())
-        .chain(rh.keys())
+        .chain(local.keys())
+        .chain(remote.keys())
         .cloned()
         .collect::<BTreeSet<_>>();
-    let mut merged = remote.clone();
+    // These maps contain hashes, sizes and blob identifiers only.
+    let mut baseline = remote
+        .iter()
+        .map(|(p, f)| (p.clone(), f.revision.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut merged_sizes = remote
+        .iter()
+        .map(|(p, f)| (p.clone(), f.size))
+        .collect::<BTreeMap<_, _>>();
+    let mut remote_blobs = remote
+        .iter()
+        .map(|(p, f)| (p.clone(), f.sha.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut outgoing = Vec::new();
     let mut incoming = Vec::new();
     let mut conflicts = Vec::new();
     for p in paths {
-        match decide(cfg.baseline.get(&p), lh.get(&p), rh.get(&p)) {
+        let lh = local.get(&p).map(|f| &f.revision);
+        let rh = remote.get(&p).map(|f| &f.revision);
+        match decide(cfg.baseline.get(&p), lh, rh) {
             Decision::Local => {
-                if let Some(b) = local.get(&p) {
-                    merged.insert(p, b.clone());
+                if let Some(file) = local.get(&p) {
+                    baseline.insert(p.clone(), file.revision.clone());
+                    merged_sizes.insert(p.clone(), file.size);
                 } else {
-                    merged.remove(&p);
+                    baseline.remove(&p);
+                    merged_sizes.remove(&p);
+                    remote_blobs.remove(&p);
                 }
+                outgoing.push(p);
             }
             Decision::Remote => incoming.push(p),
             Decision::Same => {}
-            Decision::Conflict => {
-                if let Some(b) = remote.get(&p) {
-                    core.recovery(&v.id, &p, b)?;
-                }
-                if let Some(b) = local.get(&p) {
-                    core.recovery(&v.id, &p, b)?;
-                }
-                conflicts.push(p);
-            }
+            Decision::Conflict => conflicts.push(p),
         }
     }
+    let mut merged_budget = VaultBudget::default();
+    for size in merged_sizes.values() {
+        merged_budget.add(*size, "Merged")?;
+    }
     if !conflicts.is_empty() {
+        for p in &conflicts {
+            if let Some(file) = remote.get(p) {
+                let staged = file
+                    .staged
+                    .as_ref()
+                    .ok_or_else(|| message("Missing staged conflict content"))?;
+                core.recovery(&v.id, p, &read_sync_file(staged, SYNC_FILE_LIMIT)?)?;
+            }
+            if let Some(file) = local.get(p) {
+                core.recovery(&v.id, p, &read_sync_file(&file.path, SYNC_FILE_LIMIT)?)?;
+            }
+        }
         core.update_config(|c| {
             c.vaults
                 .iter_mut()
@@ -599,24 +891,26 @@ fn sync_inner(core: &Core, v: &Vault, cfg: &SyncConfig) -> Result<()> {
             conflicts.join(", ")
         )));
     }
-    if merged != remote {
+    if !outgoing.is_empty() {
         let mut changes = Vec::new();
-        for p in merged
-            .keys()
-            .chain(remote.keys())
-            .cloned()
-            .collect::<BTreeSet<_>>()
-        {
-            if merged.get(&p) == remote.get(&p) {
-                continue;
-            }
-            if let Some(b) = merged.get(&p) {
+        for p in outgoing {
+            if let Some(file) = local.get(&p) {
+                let bytes = read_sync_file(&file.path, SYNC_FILE_LIMIT)?;
+                if revision(&bytes) != file.revision {
+                    return Err(message(format!(
+                        "{p} changed during sync. Local edits were preserved; retry."
+                    )));
+                }
                 let blob = api(
                     reqwest::Method::POST,
                     &format!("/repos/{}/git/blobs", cfg.repository),
-                    Some(json!({"content":STANDARD.encode(b),"encoding":"base64"})),
+                    Some(json!({"content":STANDARD.encode(&bytes),"encoding":"base64"})),
                 )?;
-                changes.push(json!({"path":p,"mode":"100644","type":"blob","sha":blob["sha"]}));
+                let blob_sha = blob["sha"]
+                    .as_str()
+                    .ok_or_else(|| message("Missing uploaded blob SHA"))?;
+                remote_blobs.insert(p.clone(), blob_sha.to_owned());
+                changes.push(json!({"path":p,"mode":"100644","type":"blob","sha":blob_sha}));
             } else {
                 changes.push(json!({"path":p,"mode":"100644","type":"blob","sha":null}));
             }
@@ -639,12 +933,17 @@ fn sync_inner(core: &Core, v: &Vault, cfg: &SyncConfig) -> Result<()> {
             Some(json!({"sha":new_commit["sha"],"force":false})),
         )?;
     }
-    // Apply remote-only changes with fresh per-file checks. New local edits are preserved.
+    // Apply only after all bounds/conflicts and the non-force commit succeeded.
+    // Fresh per-file checks continue to preserve edits made during network calls.
     for p in incoming {
         let dest = core.resolve(&v.id, &p)?;
         let _file_lock = core.lock(&dest.to_string_lossy())?;
-        let current = fs::read(&dest).ok();
-        if current.as_ref().map(|b| revision(b)) != lh.get(&p).cloned() {
+        let current = if dest.exists() {
+            Some(read_sync_file(&dest, SYNC_FILE_LIMIT)?)
+        } else {
+            None
+        };
+        if current.as_ref().map(|b| revision(b)).as_ref() != local.get(&p).map(|f| &f.revision) {
             return Err(message(format!(
                 "{p} changed during sync. Local edits were preserved; retry."
             )));
@@ -652,16 +951,16 @@ fn sync_inner(core: &Core, v: &Vault, cfg: &SyncConfig) -> Result<()> {
         if let Some(b) = &current {
             core.recovery(&v.id, &p, b)?;
         }
-        if let Some(b) = remote.get(&p) {
-            atomic_write(&dest, b)?;
+        if let Some(file) = remote.get(&p) {
+            let staged = file
+                .staged
+                .as_ref()
+                .ok_or_else(|| message("Missing staged remote content"))?;
+            atomic_write(&dest, &read_sync_file(staged, SYNC_FILE_LIMIT)?)?;
         } else if dest.exists() {
             fs::remove_file(&dest)?;
         }
     }
-    let baseline = merged
-        .iter()
-        .map(|(p, b)| (p.clone(), revision(b)))
-        .collect();
     core.update_config(|c| {
         let g = c
             .vaults
@@ -672,6 +971,7 @@ fn sync_inner(core: &Core, v: &Vault, cfg: &SyncConfig) -> Result<()> {
             .as_mut()
             .unwrap();
         g.baseline = baseline;
+        g.remote_blobs = remote_blobs;
         g.last_sync = Some(timestamp());
         g.error = None;
         g.conflicts.clear();
@@ -720,6 +1020,7 @@ mod tests {
                 paused: false,
                 last_sync: None,
                 baseline: BTreeMap::from([("n.md".into(), revision(b"base"))]),
+                remote_blobs: BTreeMap::new(),
                 error: None,
                 conflicts: vec![],
             });
@@ -893,6 +1194,171 @@ mod tests {
         server.join().unwrap();
         assert_eq!(out.github.unwrap().baseline["n.md"], revision(b"local"));
         assert_eq!(c.read(&v.id, "n.md").unwrap().content, "local");
+    }
+    #[test]
+    fn unchanged_sync_uses_blob_identities_without_downloading_contents() {
+        let (_d, c, v) = fixture();
+        c.create(&v.id, Some("n.md"), "base", None).unwrap();
+        let first = server(remote(b"base"));
+        let synced = sync(&c, &v.id).unwrap();
+        first.join().unwrap();
+        assert_eq!(synced.github.as_ref().unwrap().remote_blobs["n.md"], "blob");
+        // A download request would fail against this four-request fixture.
+        let mut unchanged = remote(b"base");
+        unchanged.pop();
+        let second = server(unchanged);
+        sync(&c, &v.id).unwrap();
+        second.join().unwrap();
+        assert_eq!(c.read(&v.id, "n.md").unwrap().content, "base");
+    }
+    #[test]
+    fn cached_remote_identity_still_uploads_new_local_changes() {
+        let (_d, c, v) = fixture();
+        c.create(&v.id, Some("n.md"), "local", None).unwrap();
+        c.update_config(|cfg| {
+            cfg.vaults[0]
+                .github
+                .as_mut()
+                .unwrap()
+                .remote_blobs
+                .insert("n.md".into(), "blob".into());
+            Ok(())
+        })
+        .unwrap();
+        let mut responses = remote(b"base");
+        responses.pop();
+        responses.extend([
+            (
+                "POST /repos/owner/sticky-markers/git/blobs ",
+                json!({"sha":"updated"}),
+            ),
+            (
+                "POST /repos/owner/sticky-markers/git/trees ",
+                json!({"sha":"updatedtree"}),
+            ),
+            (
+                "POST /repos/owner/sticky-markers/git/commits ",
+                json!({"sha":"updatedcommit"}),
+            ),
+            (
+                "PATCH /repos/owner/sticky-markers/git/refs/heads/main ",
+                json!({"object":{"sha":"updatedcommit"}}),
+            ),
+        ]);
+        let server = server(responses);
+        let synced = sync(&c, &v.id).unwrap();
+        server.join().unwrap();
+        let cfg = synced.github.unwrap();
+        assert_eq!(cfg.baseline["n.md"], revision(b"local"));
+        assert_eq!(cfg.remote_blobs["n.md"], "updated");
+    }
+    #[test]
+    fn remote_aggregate_budget_is_checked_before_blobs_or_changes() {
+        let (_d, c, v) = fixture();
+        c.create(&v.id, Some("n.md"), "base", None).unwrap();
+        let mut responses = remote(b"base");
+        responses.pop();
+        responses[3].1["tree"] = json!((0..14).map(|i| json!({
+            "path":format!("asset{i}.png"),"type":"blob","sha":format!("sha{i}"),"size":SYNC_FILE_LIMIT
+        })).collect::<Vec<_>>());
+        let server = server(responses);
+        assert!(sync(&c, &v.id).unwrap_err().to_string().contains("256 MiB"));
+        server.join().unwrap();
+        assert_eq!(c.read(&v.id, "n.md").unwrap().content, "base");
+        assert_eq!(
+            c.vault(&v.id).unwrap().github.unwrap().baseline["n.md"],
+            revision(b"base")
+        );
+        assert_eq!(fs::read_dir(&v.path).unwrap().count(), 1);
+    }
+    #[test]
+    fn sync_rejects_lying_blob_sizes_and_cleans_staging() {
+        let (_d, c, v) = fixture();
+        c.create(&v.id, Some("n.md"), "base", None).unwrap();
+        let mut responses = remote(b"remote");
+        responses[3].1["tree"][0]["size"] = json!(1);
+        let server = server(responses);
+        assert!(sync(&c, &v.id)
+            .unwrap_err()
+            .to_string()
+            .contains("declared sync size"));
+        server.join().unwrap();
+        assert_eq!(c.read(&v.id, "n.md").unwrap().content, "base");
+        assert!(!fs::read_dir(&c.data).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("github-sync-")));
+    }
+    #[test]
+    fn api_response_limits_apply_to_streams_without_content_length() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).unwrap();
+            let body = json!({"message":"x".repeat(256)}).to_string();
+            // Connection-delimited response deliberately has no declared length.
+            write!(stream, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{body}").unwrap();
+        });
+        let response = client()
+            .unwrap()
+            .get(format!("http://{addr}"))
+            .send()
+            .unwrap();
+        assert!(read_api_response(response, 128)
+            .unwrap_err()
+            .to_string()
+            .contains("safety limit"));
+        server.join().unwrap();
+    }
+    #[test]
+    fn base64_whitespace_is_decoded_without_copying_an_encoded_vault() {
+        let d = tempfile::tempdir().unwrap();
+        let value = json!({"encoding":"base64","content":"cmVt\nb3Rl\r\n"});
+        let file = stage_blob(&value, "n.md", 6, d.path()).unwrap().unwrap();
+        assert_eq!(fs::read(file.path).unwrap(), b"remote");
+        assert_eq!(file.revision, revision(b"remote"));
+    }
+    #[test]
+    fn conflict_resolution_bounds_content_and_updates_the_blob_cache() {
+        let (_d, c, v) = fixture();
+        c.create(&v.id, Some("n.md"), "local", None).unwrap();
+        c.update_config(|cfg| {
+            cfg.vaults[0].github.as_mut().unwrap().conflicts = vec!["n.md".into()];
+            Ok(())
+        })
+        .unwrap();
+        let server = server(vec![
+            (
+                "GET /repos/owner/sticky-markers ",
+                json!({"id":42,"private":true}),
+            ),
+            (
+                "GET /repos/owner/sticky-markers/contents/n.md?ref=main ",
+                json!({"size":6,"encoding":"none","sha":"changed"}),
+            ),
+            (
+                "GET /repos/owner/sticky-markers/git/blobs/changed ",
+                json!({"encoding":"base64","content":STANDARD.encode(b"remote")}),
+            ),
+        ]);
+        let updated = resolve_conflict(&c, &v.id, "n.md", "remote").unwrap();
+        server.join().unwrap();
+        assert_eq!(c.read(&v.id, "n.md").unwrap().content, "remote");
+        assert_eq!(updated.github.unwrap().remote_blobs["n.md"], "changed");
+    }
+    #[test]
+    fn aggregate_budgets_bound_both_bytes_and_file_counts() {
+        let mut bytes = VaultBudget::default();
+        bytes.add(SYNC_VAULT_LIMIT, "Merged").unwrap();
+        assert!(bytes.add(1, "Merged").is_err());
+        let mut count = VaultBudget::default();
+        for _ in 0..SYNC_FILE_COUNT_LIMIT {
+            count.add(0, "Local").unwrap();
+        }
+        assert!(count.add(0, "Local").is_err());
     }
     #[test]
     fn registered_external_vault_cannot_be_converted() {

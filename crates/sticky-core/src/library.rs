@@ -199,6 +199,17 @@ impl Core {
         }
         self.vault(destination)?;
         let _batch = self.lock("vault-moves")?;
+        // Lock every participating vault's namespace in the same order before
+        // taking any source/target path locks, matching create and rename.
+        let naming_ids = notes
+            .iter()
+            .map(|n| n.vault_id.as_str())
+            .chain(std::iter::once(destination))
+            .collect::<std::collections::BTreeSet<_>>();
+        let _names = naming_ids
+            .into_iter()
+            .map(|id| self.lock(&format!("new-name:{id}")))
+            .collect::<Result<Vec<_>>>()?;
         let mut sources = Vec::new();
         let mut names = std::collections::BTreeSet::new();
         for note in notes {
@@ -230,7 +241,7 @@ impl Core {
             self.recovery(&d.vault_id, &d.path, d.content.as_bytes())?;
         }
         for d in &documents {
-            self.create(destination, Some(&d.path), &d.content, None)?;
+            self.create_with_naming_lock(destination, Some(&d.path), &d.content, None)?;
         }
         // A source edited externally while copying is kept; all target copies
         // and recovery copies are also retained, rather than losing either edit.

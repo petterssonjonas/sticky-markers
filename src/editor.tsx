@@ -16,6 +16,7 @@ import {
 } from "@codemirror/commands";
 import {
   livePreview,
+  commitPendingEditorBuffers,
   rowMouseSelection,
   type PreviewOptions,
 } from "./live-preview";
@@ -24,6 +25,7 @@ export interface EditorHandle {
   format: (kind: string) => void;
   focus: () => void;
   setReadOnly: (locked: boolean) => void;
+  commitPending: () => void;
 }
 export function formatEdit(
   text: string,
@@ -145,6 +147,9 @@ export const MarkdownEditor = forwardRef<
   lineEnding.current = value.includes("\r\n") ? "\r\n" : "\n";
   useImperativeHandle(ref, () => ({
     focus: () => view.current?.focus(),
+    commitPending: () => {
+      if (view.current) commitPendingEditorBuffers(view.current);
+    },
     setReadOnly: (locked) =>
       view.current?.dispatch({
         effects: editable.current.reconfigure([

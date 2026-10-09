@@ -27,7 +27,7 @@ The desktop application uses a Rust file core. Saves use temporary files, atomic
 
 Settings, window geometry, and recovery copies live outside vaults in the OS local application-data folder under `sticky-markers`. **Settings → Open local recovery copies** opens it. There are up to 30 snapshots per note. Delete uses OS Trash, falling back to a recovery copy if Trash is unavailable. Back up your vault using your preferred system; recovery is local and bounded.
 
-`STICKY_MARKERS_DATA_DIR` overrides application-data location for isolated testing. UTF-8 text editing is limited to 100 KiB per file, attachments to 20 MiB. Hidden folders, symlink paths, and unsafe filenames are excluded. Frontmatter and CRLF are preserved; rename does not rewrite other notes' links. Renaming opens a separate **Rename note...** window, adds `.md` to names without an extension and preserves explicit extensions.
+`STICKY_MARKERS_DATA_DIR` overrides application-data location for isolated testing. UTF-8 text editing is limited to 100 KiB per file. Local raster image previews accept files up to 20 MiB, 16 megapixels (4 megapixels for WebP), and 8192 pixels per edge; they use static thumbnails up to 1024 pixels. Animated GIF/WebP previews show their first frame. WebP previews also bound codec table complexity; images beyond that budget show an attachment error. SVG previews are limited to 256 KiB and 2048 elements, supporting static shapes, text, and gradients; scripts, external resources, filters, masks, and `<use>` are excluded. Original attachment files are preserved. Hidden folders, symlink paths, and unsafe filenames are excluded. Frontmatter and CRLF are preserved; rename does not rewrite other notes' links. Renaming opens a separate **Rename note...** window, adds `.md` to names without an extension and preserves explicit extensions.
 
 ## Optional GitHub synced vaults
 
@@ -37,7 +37,7 @@ For a distributable build, register a GitHub OAuth app with **device flow enable
 
 Sync verifies repository identity and privacy, compares local and remote revisions against a baseline, and creates non-force commits. Conflicting files retain both versions in local recovery and require an explicit local/remote choice in Settings. A competing remote commit rejects the push rather than overwriting history. Local saving continues without network access. Sync on quit is bounded and offers quitting with upload deferred if unsuccessful.
 
-Sync includes UTF-8 text notes and PNG/JPEG/GIF/WebP/SVG/PDF attachments; per-device settings and `.obsidian` are not synced. Whole-file conflicts require resolution even when edits affect different lines. The desktop must be running for scheduled uploads. Live GitHub authorization requires the OAuth registration above; mock API tests cover sync behavior, but an account-based end-to-end test has not been run in this workspace.
+Sync includes UTF-8 text notes and PNG/JPEG/GIF/WebP/SVG/PDF attachments; per-device settings and `.obsidian` are not synced. Whole-file conflicts require resolution even when edits affect different lines. The desktop must be running for scheduled uploads. [Sync safety limits](docs/github-sync-limits.md) cap each local, remote, or merged candidate vault at 256 MiB and 10,000 supported files; oversized vaults report an error before sync changes are applied. Live GitHub authorization requires the OAuth registration above; mock API tests cover sync behavior, but an account-based end-to-end test has not been run in this workspace.
 
 ## Write notes from an assistant
 

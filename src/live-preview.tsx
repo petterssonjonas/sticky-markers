@@ -1,5 +1,5 @@
 import { createRoot, type Root } from "react-dom/client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   StateField,
   StateEffect,
@@ -23,6 +23,7 @@ import remarkMath from "remark-math";
 import remarkFrontmatter from "remark-frontmatter";
 import { Markdown } from "./markdown";
 import { external } from "./api";
+import { decodeLink } from "./attachment-loader";
 const parser = unified()
   .use(remarkParse)
   .use(remarkGfm)
@@ -128,42 +129,111 @@ class Render extends WidgetType {
   }
 }
 
-function TableCell({
-  source,
-  from,
-  to,
-  view,
-  options,
-}: {
-  source: string;
-  from: number;
-  to: number;
+interface TableModel {
+  root: Root;
+  node: Node;
   view: EditorView;
   options: PreviewOptions;
+}
+const tableModels = new WeakMap<HTMLElement, TableModel>();
+const cellInputs = new WeakMap<EditorView, Map<HTMLInputElement, () => void>>();
+
+/** Flush the current native input value before Save, Rename, Close or Quit. */
+export function commitPendingEditorBuffers(view: EditorView) {
+  for (const commit of cellInputs.get(view)?.values() ?? []) commit();
+}
+
+function cellRange(model: TableModel, row: number, column: number) {
+  const cells = model.node.children?.[row]?.children,
+    cell = cells?.[column];
+  if (!cell) return null;
+  let { from, to } = bounds(cell);
+  const all = model.view.state.doc;
+  if (all.sliceString(from, from + 1) === "|") from++;
+  if (
+    column === cells.length - 1 &&
+    all.sliceString(to - 1, to) === "|" &&
+    all.sliceString(to - 2, to - 1) !== "\\"
+  )
+    to--;
+  return { from, to, source: all.sliceString(from, to) };
+}
+
+function cellPadding(source: string) {
+  if (!source.trim()) {
+    const middle = Math.ceil(source.length / 2);
+    return { left: source.slice(0, middle), right: source.slice(middle) };
+  }
+  return {
+    left: source.match(/^\s*/)?.[0] ?? "",
+    right: source.match(/\s*$/)?.[0] ?? "",
+  };
+}
+
+function TableCell({
+  model,
+  row,
+  column,
+}: {
+  model: TableModel;
+  row: number;
+  column: number;
 }) {
+  const { view, options } = model,
+    source = cellRange(model, row, column)?.source ?? "";
   const [editing, setEditing] = useState(false),
     [value, setValue] = useState(source.trim());
-  const commit = () => {
-    setEditing(false);
-    if (view.state.readOnly || value === source.trim()) return;
+  const input = useRef<HTMLInputElement>(null);
+  const padding = useRef(cellPadding(source));
+  const commitValue = (value: string) => {
+    if (view.state.readOnly) return;
+    // The model is updated synchronously when CodeMirror changes. Resolve the
+    // current offsets here, rather than retaining positions from a React render.
+    const cell = cellRange(model, row, column);
+    if (!cell) return;
+    if (value === cell.source.trim()) return;
     // Keep the pipe syntax and spacing around the cell; edit only its value.
-    const left = source.match(/^\s*/)?.[0] ?? "",
-      right = source.match(/\s*$/)?.[0] ?? "";
+    const { left, right } = padding.current;
     const insert =
       left + value.replace(/(?<!\\)\|/g, "\\|").replace(/[\r\n]/g, " ") + right;
-    view.dispatch({ changes: { from, to, insert } });
+    if (insert !== cell.source)
+      view.dispatch({ changes: { from: cell.from, to: cell.to, insert } });
+  };
+  const commitRef = useRef(commitValue);
+  commitRef.current = commitValue;
+  useEffect(() => {
+    if (!editing || !input.current) return;
+    const element = input.current;
+    let inputs = cellInputs.get(view);
+    if (!inputs) cellInputs.set(view, (inputs = new Map()));
+    inputs.set(element, () => commitRef.current(element.value));
+    element.readOnly = view.state.readOnly;
+    return () => {
+      inputs.delete(element);
+      if (!inputs.size) cellInputs.delete(view);
+    };
+  }, [editing, view]);
+  const finish = () => {
+    commitValue(input.current?.value ?? value);
+    setEditing(false);
   };
   return editing ? (
     <input
+      ref={input}
       aria-label="Edit table cell"
       autoFocus
       value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={commit}
+      readOnly={view.state.readOnly}
+      onChange={(e) => {
+        setValue(e.target.value);
+        // A table input is part of the document immediately. Autosave and the
+        // recovery journal therefore include it even while it still has focus.
+        commitValue(e.target.value);
+      }}
+      onBlur={finish}
       onKeyDown={(e) => {
         e.stopPropagation();
-        if (e.key === "Enter") commit();
-        if (e.key === "Escape") setEditing(false);
+        if (e.key === "Enter" || e.key === "Escape") finish();
       }}
     />
   ) : (
@@ -171,10 +241,18 @@ function TableCell({
       tabIndex={0}
       className="lp-table-cell"
       onClick={() => {
-        if (!view.state.readOnly) setEditing(true);
+        if (!view.state.readOnly) {
+          padding.current = cellPadding(source);
+          setValue(source.trim());
+          setEditing(true);
+        }
       }}
       onKeyDown={(e) => {
-        if (e.key === "Enter" && !view.state.readOnly) setEditing(true);
+        if (e.key === "Enter" && !view.state.readOnly) {
+          padding.current = cellPadding(source);
+          setValue(source.trim());
+          setEditing(true);
+        }
       }}
     >
       <Markdown content={source.trim()} {...options} />
@@ -182,7 +260,6 @@ function TableCell({
   );
 }
 class Table extends WidgetType {
-  private root?: Root;
   constructor(
     readonly source: string,
     readonly node: Node,
@@ -194,36 +271,42 @@ class Table extends WidgetType {
     return (
       this.source === other.source &&
       bounds(this.node).from === bounds(other.node).from &&
-      this.options.dark === other.options.dark
+      this.options.dark === other.options.dark &&
+      this.options.path === other.options.path &&
+      this.options.vaultId === other.options.vaultId
     );
   }
   toDOM(view: EditorView) {
     const host = document.createElement("div");
     host.className = "live-preview-block lp-table";
-    const all = view.state.doc.toString();
-    this.root = createRoot(host);
-    this.root.render(
+    const model = {
+      root: createRoot(host),
+      node: this.node,
+      view,
+      options: this.options,
+    };
+    tableModels.set(host, model);
+    this.render(model);
+    return host;
+  }
+  updateDOM(host: HTMLElement, view: EditorView) {
+    const model = tableModels.get(host);
+    if (!model) return false;
+    model.node = this.node;
+    model.view = view;
+    model.options = this.options;
+    this.render(model);
+    return true;
+  }
+  private render(model: TableModel) {
+    model.root.render(
       <div className="markdown-body">
         <table>
           <tbody>
-            {this.node.children?.map((row, i) => (
+            {model.node.children?.map((row, i) => (
               <tr key={i}>
-                {row.children?.map((cell, j) => {
-                  let { from, to } = bounds(cell);
-                  if (all[from] === "|") from++;
-                  if (
-                    j === (row.children?.length ?? 0) - 1 &&
-                    all[to - 1] === "|" &&
-                    all[to - 2] !== "\\"
-                  )
-                    to--;
-                  const props = {
-                    source: all.slice(from, to),
-                    from,
-                    to,
-                    view,
-                    options: this.options,
-                  };
+                {row.children?.map((_cell, j) => {
+                  const props = { model, row: i, column: j };
                   return i === 0 ? (
                     <th key={j}>
                       <TableCell {...props} />
@@ -240,11 +323,11 @@ class Table extends WidgetType {
         </table>
       </div>,
     );
-    return host;
   }
-  destroy() {
-    const root = this.root;
-    queueMicrotask(() => root?.unmount());
+  destroy(host: HTMLElement) {
+    const model = tableModels.get(host);
+    tableModels.delete(host);
+    queueMicrotask(() => model?.root.unmount());
   }
   ignoreEvent() {
     return true;
@@ -317,10 +400,129 @@ export const rowMouseSelection: Extension = Prec.highest(
     };
   }),
 );
+
+interface HiddenRange {
+  from: number;
+  to: number;
+  height: number;
+  left?: HiddenRange;
+  right?: HiddenRange;
+}
+/** Non-overlapping intervals in an AVL tree: insertion stays O(log n), even
+ * when nested syntax or the HTML/wiki pass visits offsets out of order. */
+class HiddenRanges {
+  private root?: HiddenRange;
+  add(from: number, to: number) {
+    let current = this.root;
+    while (current) {
+      if (to <= current.from) current = current.left;
+      else if (from >= current.to) current = current.right;
+      else return false;
+    }
+    const height = (node?: HiddenRange) => node?.height ?? 0;
+    const refresh = (node: HiddenRange) => {
+      node.height = 1 + Math.max(height(node.left), height(node.right));
+      return node;
+    };
+    const left = (node: HiddenRange) => {
+      const next = node.right!;
+      node.right = next.left;
+      next.left = refresh(node);
+      return refresh(next);
+    };
+    const right = (node: HiddenRange) => {
+      const next = node.left!;
+      node.left = next.right;
+      next.right = refresh(node);
+      return refresh(next);
+    };
+    const insert = (node?: HiddenRange): HiddenRange => {
+      if (!node) return { from, to, height: 1 };
+      if (from < node.from) node.left = insert(node.left);
+      else node.right = insert(node.right);
+      refresh(node);
+      const balance = height(node.left) - height(node.right);
+      if (balance > 1) {
+        if (from > node.left!.from) node.left = left(node.left!);
+        return right(node);
+      }
+      if (balance < -1) {
+        if (from < node.right!.from) node.right = right(node.right!);
+        return left(node);
+      }
+      return node;
+    };
+    this.root = insert(this.root);
+    return true;
+  }
+}
+
+function selectedLines(state: EditorState, focused: boolean) {
+  const lines = new Set<number>();
+  if (!focused) return lines;
+  const selection = state.selection.main;
+  const first = state.doc.lineAt(selection.from).number,
+    last = state.doc.lineAt(
+      selection.empty
+        ? selection.to
+        : Math.max(selection.from, selection.to - 1),
+    ).number;
+  for (let line = first; line <= last; line++) lines.add(line);
+  return lines;
+}
+
+/** Restore/reveal only rows whose active state changed. The parsed Markdown,
+ * static marks, tables and untouched decorations are reused on cursor moves. */
+function revealSelectedLines(
+  state: EditorState,
+  base: DecorationSet,
+  current: DecorationSet,
+  previous: Set<number>,
+  active: Set<number>,
+) {
+  const changed = [...new Set([...previous, ...active])]
+    .filter((number) => previous.has(number) !== active.has(number))
+    .sort((a, b) => a - b);
+  for (let index = 0; index < changed.length;) {
+    const first = changed[index++];
+    let last = first;
+    while (changed[index] === last + 1) last = changed[index++];
+    const from = state.doc.line(first).from,
+      to = Math.min(state.doc.length + 1, state.doc.line(last).to + 1);
+    const add: Range<Decoration>[] = [];
+    base.between(from, Math.min(to, state.doc.length), (start, end, value) => {
+      if (
+        start >= from &&
+        start < to &&
+        value.spec.lpSyntax &&
+        !active.has(state.doc.lineAt(start).number)
+      )
+        add.push(value.range(start, end));
+    });
+    for (let number = first; number <= last; number++)
+      if (active.has(number))
+        add.push(
+          Decoration.line({ class: "lp-source-line", lpActive: true }).range(
+            state.doc.line(number).from,
+          ),
+        );
+    current = current.update({
+      filterFrom: from,
+      filterTo: Math.min(to, state.doc.length),
+      filter: (start, _end, value) =>
+        start < from ||
+        start >= to ||
+        !(value.spec.lpSyntax || value.spec.lpActive),
+      add,
+      sort: true,
+    });
+  }
+  return current;
+}
+
 export function livePreview(options: PreviewOptions): Extension {
   const decorate = (
     state: EditorState,
-    focused: boolean,
     tree: ReturnType<typeof parser.parse>,
   ) => {
     const decorations: Range<Decoration>[] = [];
@@ -338,9 +540,8 @@ export function livePreview(options: PreviewOptions): Extension {
         n.url ?? "",
       ]),
     );
-    const active = new Set(activeLines(source, state.selection.main, focused));
     const lineClasses = new Map<number, Set<string>>();
-    const hidden: { from: number; to: number }[] = [];
+    const hidden = new HiddenRanges();
     const styleLine = (number: number, className: string) => {
       const classes = lineClasses.get(number) ?? new Set();
       classes.add(className);
@@ -352,15 +553,13 @@ export function livePreview(options: PreviewOptions): Extension {
         last = state.doc.lineAt(Math.max(from, to - 1));
       // Split syntax spanning rows so selecting one row never reveals its siblings.
       for (let n = first.number; n <= last.number; n++) {
-        if (active.has(n)) continue;
         const line = state.doc.line(n),
           a = Math.max(from, line.from),
           b = Math.min(to, line.to);
-        if (b > a && !hidden.some((r) => a < r.to && b > r.from)) {
+        if (b > a && hidden.add(a, b)) {
           decorations.push(
-            Decoration.replace(widget ? { widget } : {}).range(a, b),
+            Decoration.replace({ widget, lpSyntax: true }).range(a, b),
           );
-          hidden.push({ from: a, to: b });
         }
       }
     };
@@ -614,7 +813,6 @@ export function livePreview(options: PreviewOptions): Extension {
     }
     for (let number = 1; number <= state.doc.lines; number++) {
       const classes = lineClasses.get(number) ?? new Set<string>();
-      if (active.has(number)) classes.add("lp-source-line");
       if (classes.size)
         decorations.push(
           Decoration.line({ class: [...classes].join(" ") }).range(
@@ -630,21 +828,66 @@ export function livePreview(options: PreviewOptions): Extension {
   const field = StateField.define<{
     decorations: DecorationSet;
     atomics: DecorationSet;
+    base: DecorationSet;
+    active: Set<number>;
     focused: boolean;
     tree: ReturnType<typeof parser.parse>;
   }>({
     create(state) {
       const tree = parser.parse(state.doc.toString());
-      return { ...decorate(state, true, tree), focused: true, tree };
+      const rendered = decorate(state, tree),
+        active = selectedLines(state, true);
+      return {
+        ...rendered,
+        base: rendered.decorations,
+        decorations: revealSelectedLines(
+          state,
+          rendered.decorations,
+          rendered.decorations,
+          new Set(),
+          active,
+        ),
+        active,
+        focused: true,
+        tree,
+      };
     },
     update(value, tr) {
       let focused = value.focused;
       for (const e of tr.effects) if (e.is(focusEffect)) focused = e.value;
-      if (tr.docChanged || tr.selection || focused !== value.focused) {
-        const tree = tr.docChanged
-          ? parser.parse(tr.state.doc.toString())
-          : value.tree;
-        return { ...decorate(tr.state, focused, tree), focused, tree };
+      if (tr.docChanged) {
+        const tree = parser.parse(tr.state.doc.toString()),
+          rendered = decorate(tr.state, tree),
+          active = selectedLines(tr.state, focused);
+        return {
+          ...rendered,
+          base: rendered.decorations,
+          decorations: revealSelectedLines(
+            tr.state,
+            rendered.decorations,
+            rendered.decorations,
+            new Set(),
+            active,
+          ),
+          active,
+          focused,
+          tree,
+        };
+      }
+      if (tr.selection || focused !== value.focused) {
+        const active = selectedLines(tr.state, focused);
+        return {
+          ...value,
+          decorations: revealSelectedLines(
+            tr.state,
+            value.base,
+            value.decorations,
+            value.active,
+            active,
+          ),
+          active,
+          focused,
+        };
       }
       return value;
     },
@@ -702,6 +945,11 @@ export function livePreview(options: PreviewOptions): Extension {
     EditorView.focusChangeEffect.of((_state, focused) =>
       focusEffect.of(focused),
     ),
+    EditorView.updateListener.of((update) => {
+      if (update.startState.readOnly === update.state.readOnly) return;
+      for (const input of cellInputs.get(update.view)?.keys() ?? [])
+        input.readOnly = update.state.readOnly;
+    }),
     EditorView.domEventHandlers({
       click: (event) => {
         const target = (event.target as HTMLElement).closest<HTMLElement>(
@@ -720,8 +968,10 @@ export function livePreview(options: PreviewOptions): Extension {
             options.onWiki(href);
             return true;
           }
-          if (/\.md(?:#.*)?$/i.test(href)) options.onWiki(decodeURI(href));
-          else void external(href);
+          if (/\.md(?:#.*)?$/i.test(href)) {
+            const decoded = decodeLink(href);
+            if (decoded !== undefined) options.onWiki(decoded);
+          } else void external(href);
           return true;
         }
         return false;
